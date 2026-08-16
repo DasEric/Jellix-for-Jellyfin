@@ -43,6 +43,7 @@ jobs:
           node --check Jellyfin.Plugin.Jellix/Web/link.js
           node --check Jellyfin.Plugin.Jellix/Web/password.js
           node --check Jellyfin.Plugin.Jellix/Web/password-standalone.js
+          node Tests/config-page.test.js
       - name: Build release archive
         shell: pwsh
         run: ./scripts/build.ps1 -NoRestore

@@ -12,6 +12,38 @@
     value ? Dashboard.showLoadingMsg() : Dashboard.hideLoadingMsg();
   }
 
+  function field(value, names, fallback) {
+    if (!value || typeof value !== 'object') return fallback;
+    for (let index = 0; index < names.length; index++) {
+      const result = value[names[index]];
+      if (result !== undefined && result !== null) return result;
+    }
+    return fallback;
+  }
+
+  function normalizedId(value) {
+    return typeof value === 'string' ? value.replace(/-/g, '').toLowerCase() : '';
+  }
+
+  function normalizeUser(value) {
+    const id = String(field(value, ['Id', 'id'], '') || '');
+    const name = String(field(value, ['Name', 'name', 'Username', 'username'], id) || id);
+    return id ? { id: id, name: name } : null;
+  }
+
+  function normalizeLink(value) {
+    return {
+      guildId: String(field(value, ['guildId', 'GuildId'], '') || ''),
+      discordUserId: String(field(value, ['discordUserId', 'DiscordUserId'], '') || ''),
+      jellyfinUserId: String(field(value, ['jellyfinUserId', 'JellyfinUserId'], '') || '')
+    };
+  }
+
+  function errorMessage(error, fallback) {
+    const response = field(error, ['responseJSON'], null);
+    return String(field(response, ['error', 'Error'], field(error, ['message', 'Message'], fallback)) || fallback);
+  }
+
   function validateSnowflake(value, label, required) {
     if (!value && !required) return;
     if (!/^\d{15,22}$/.test(value)) throw new Error(label + ' ist keine gültige Discord-ID.');
@@ -41,8 +73,8 @@
       booleans.forEach(function (key) { page.querySelector('#' + key).checked = !!config[key]; });
       numbers.forEach(function (key) { page.querySelector('#' + key).value = config[key]; });
       strings.forEach(function (key) { page.querySelector('#' + key).value = config[key] || ''; });
-      page.querySelector('#DiscordToken').placeholder = results[1].configured ? 'Gespeichert' : 'Noch nicht gesetzt';
-      users = results[5] || [];
+      page.querySelector('#DiscordToken').placeholder = field(results[1], ['configured', 'Configured'], false) ? 'Gespeichert' : 'Noch nicht gesetzt';
+      users = (Array.isArray(results[5]) ? results[5] : []).map(normalizeUser).filter(Boolean);
       renderStatus(results[2]);
       renderUsers();
       renderLinks(results[3]);
@@ -54,33 +86,42 @@
 
   function renderStatus(status) {
     const target = page.querySelector('#jellixStatus');
-    const bridge = status.mediaForgeBridgeAvailable ? 'bereit' : (status.mediaForgeInstalled ? 'Änderung erforderlich' : 'nicht installiert');
-    target.textContent = 'Discord: ' + (status.discordReady ? 'verbunden' : 'offline') +
-      ' · MediaForge: ' + bridge + (status.mediaForgeVersion ? ' (' + status.mediaForgeVersion + ')' : '') +
-      ' · Wartende Meldungen: ' + status.pendingNotifications +
-      (status.configurationIssues && status.configurationIssues.length ? ' · Hinweise: ' + status.configurationIssues.join(' ') : '');
+    const bridgeAvailable = field(status, ['mediaForgeBridgeAvailable', 'MediaForgeBridgeAvailable'], false);
+    const installed = field(status, ['mediaForgeInstalled', 'MediaForgeInstalled'], false);
+    const version = field(status, ['mediaForgeVersion', 'MediaForgeVersion'], '');
+    const issues = field(status, ['configurationIssues', 'ConfigurationIssues'], []);
+    const bridge = bridgeAvailable ? 'bereit' : (installed ? 'Änderung erforderlich' : 'nicht installiert');
+    target.textContent = 'Discord: ' + (field(status, ['discordReady', 'DiscordReady'], false) ? 'verbunden' : 'offline') +
+      ' · MediaForge: ' + bridge + (version ? ' (' + version + ')' : '') +
+      ' · Wartende Meldungen: ' + field(status, ['pendingNotifications', 'PendingNotifications'], 0) +
+      (Array.isArray(issues) && issues.length ? ' · Hinweise: ' + issues.join(' ') : '');
   }
 
   function renderUsers() {
     const select = page.querySelector('#LinkJellyfinUser');
     select.textContent = '';
-    users.slice().sort(function (a, b) { return a.Name.localeCompare(b.Name); }).forEach(function (user) {
-      const option = document.createElement('option'); option.value = user.Id; option.textContent = user.Name; select.appendChild(option);
+    users.slice().sort(function (a, b) { return a.name.localeCompare(b.name); }).forEach(function (user) {
+      const option = document.createElement('option'); option.value = user.id; option.textContent = user.name; select.appendChild(option);
     });
+    select.disabled = users.length === 0;
+    page.querySelector('#jellixLinkForm button[type="submit"]').disabled = users.length === 0;
   }
 
   function userName(id) {
-    const user = users.find(function (value) { return value.Id.replace(/-/g, '').toLowerCase() === id.replace(/-/g, '').toLowerCase(); });
-    return user ? user.Name : id;
+    const normalized = normalizedId(id);
+    const user = normalized ? users.find(function (value) { return normalizedId(value.id) === normalized; }) : null;
+    return user ? user.name : (id || 'Unbekannter Jellyfin-Benutzer');
   }
 
   function renderLinks(links) {
     const target = page.querySelector('#jellixLinks'); target.textContent = '';
-    if (!links.length) { target.textContent = 'Noch keine Konten zugewiesen.'; return; }
-    links.forEach(function (link) {
+    const values = (Array.isArray(links) ? links : []).map(normalizeLink);
+    if (!values.length) { target.textContent = 'Noch keine Konten zugewiesen.'; return; }
+    values.forEach(function (link) {
       const row = document.createElement('div'); row.className = 'listItem';
-      const text = document.createElement('div'); text.className = 'listItemBody'; text.textContent = userName(link.jellyfinUserId) + ' ↔ Discord ' + link.discordUserId;
+      const text = document.createElement('div'); text.className = 'listItemBody'; text.textContent = userName(link.jellyfinUserId) + ' ↔ Discord ' + (link.discordUserId || 'unbekannt');
       const button = document.createElement('button'); button.setAttribute('is', 'emby-button'); button.type = 'button'; button.textContent = 'Lösen';
+      button.disabled = !link.guildId || !link.discordUserId;
       button.addEventListener('click', async function () {
         if (!window.confirm('Diese Verknüpfung lösen?')) return;
         await ApiClient.ajax({ type: 'DELETE', url: ApiClient.getUrl('Jellix/Admin/Links/' + encodeURIComponent(link.guildId) + '/' + encodeURIComponent(link.discordUserId)) });
@@ -92,12 +133,19 @@
 
   function renderAudit(records) {
     const target = page.querySelector('#jellixAudit'); target.textContent = '';
-    if (!records.length) { target.textContent = 'Noch keine Einträge.'; return; }
-    records.forEach(function (record) {
+    const values = Array.isArray(records) ? records : [];
+    if (!values.length) { target.textContent = 'Noch keine Einträge.'; return; }
+    values.forEach(function (record) {
       const row = document.createElement('div'); row.className = 'listItem';
       const body = document.createElement('div'); body.className = 'listItemBody';
-      const title = document.createElement('div'); title.textContent = new Date(record.createdUtc).toLocaleString() + ' · ' + record.action + (record.success ? '' : ' · fehlgeschlagen');
-      const detail = document.createElement('div'); detail.className = 'secondary'; detail.textContent = record.actorType + ': ' + record.actorId + (record.details ? ' · ' + record.details : '');
+      const created = field(record, ['createdUtc', 'CreatedUtc'], null);
+      const action = field(record, ['action', 'Action'], 'Unbekannte Aktion');
+      const success = field(record, ['success', 'Success'], false);
+      const actorType = field(record, ['actorType', 'ActorType'], 'unbekannt');
+      const actorId = field(record, ['actorId', 'ActorId'], 'unbekannt');
+      const details = field(record, ['details', 'Details'], '');
+      const title = document.createElement('div'); title.textContent = (created ? new Date(created).toLocaleString() : 'Unbekannte Zeit') + ' · ' + action + (success ? '' : ' · fehlgeschlagen');
+      const detail = document.createElement('div'); detail.className = 'secondary'; detail.textContent = actorType + ': ' + actorId + (details ? ' · ' + details : '');
       body.appendChild(title); body.appendChild(detail); row.appendChild(body); target.appendChild(row);
     });
   }
@@ -121,7 +169,7 @@
       }
       await load();
     } catch (error) {
-      window.alert(error.message || 'Die Einstellungen konnten nicht gespeichert werden.');
+      window.alert(errorMessage(error, 'Die Einstellungen konnten nicht gespeichert werden.'));
     } finally { loading(false); }
   });
 
@@ -130,10 +178,12 @@
     try {
       const guildId = page.querySelector('#GuildId').value.trim();
       const discordUserId = page.querySelector('#LinkDiscordUser').value.trim();
+      const jellyfinUserId = page.querySelector('#LinkJellyfinUser').value;
       validateSnowflake(guildId, 'Discord-Server-ID', true); validateSnowflake(discordUserId, 'Discord-Benutzer-ID', true);
-      await ApiClient.ajax({ type: 'POST', url: ApiClient.getUrl('Jellix/Admin/Links'), contentType: 'application/json', data: JSON.stringify({ guildId: guildId, discordUserId: discordUserId, jellyfinUserId: page.querySelector('#LinkJellyfinUser').value }) });
+      if (!normalizedId(jellyfinUserId)) throw new Error('Bitte wähle einen Jellyfin-Benutzer aus.');
+      await ApiClient.ajax({ type: 'POST', url: ApiClient.getUrl('Jellix/Admin/Links'), contentType: 'application/json', data: JSON.stringify({ guildId: guildId, discordUserId: discordUserId, jellyfinUserId: jellyfinUserId }) });
       page.querySelector('#LinkDiscordUser').value = ''; await load();
-    } catch (error) { window.alert(error.message || 'Die Zuweisung konnte nicht gespeichert werden.'); }
+    } catch (error) { window.alert(errorMessage(error, 'Die Zuweisung konnte nicht gespeichert werden.')); }
     finally { loading(false); }
   });
 
