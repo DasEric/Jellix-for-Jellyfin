@@ -4,7 +4,7 @@
   const page = document.querySelector('#JellixConfigPage');
   const booleans = ['BotEnabled','SelfLinkEnabled','PasswordChangeEnabled','RevokeSessionsAfterPasswordChange','UnlockAccountEnabled','UserPageEnabled','StatisticsEnabled','LeaderboardEnabled','AchievementsEnabled','AchievementFilmFanEnabled','AchievementCineasteEnabled','AchievementSeriesJunkieEnabled','AchievementNightOwlEnabled','AchievementBingeWatcherEnabled','AchievementNoLifeEnabled','MediaForgeEnabled','NewMediaNotificationsEnabled','NewEpisodeNotificationsEnabled','NowPlayingShowUsernames','RandomEnabled','AccessRequestsEnabled','AssignStreamingRoleAfterApproval','StickyEnabled','AdminAlertsEnabled','CheckJellyfinUpdates'];
   const numbers = ['LinkCodeLifetimeMinutes','PasswordTicketLifetimeMinutes','CompletedPlaybackPercent','MediaForgePollSeconds','AccessRequestCooldownHours','StickyDebounceSeconds','HealthCheckMinutes','AuditRetentionDays'];
-  const strings = ['GuildId','JellyfinPublicUrl','Language','StreamingRoleId','RequestRoleId','AdminRoleId','AchievementChannelId','AchievementNotificationMode','TimeZoneId','RequestNotificationMode','RequestNotificationChannelId','NewMediaChannelId','NowPlayingMode','AccessRequestChannelId','AdminAlertChannelId'];
+  const strings = ['GuildId','JellyfinPublicUrl','Language','StreamingRoleId','RequestRoleId','AdminRoleId','AchievementChannelId','AchievementNotificationMode','TimeZoneId','RequestNotificationMode','RequestNotificationChannelId','NewMediaChannelId','NowPlayingMode','AccessRequestChannelId','AdminAlertMode','AdminAlertChannelId'];
   let users = [];
 
   function loading(value) {

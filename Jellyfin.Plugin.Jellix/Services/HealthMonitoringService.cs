@@ -170,7 +170,8 @@ public sealed class HealthMonitoringService : BackgroundService
     private async Task AlertAsync(string key, bool active, string german, string english, CancellationToken cancellationToken)
     {
         var config = Plugin.Instance?.Configuration;
-        if (config?.AdminAlertsEnabled != true || !ulong.TryParse(config.AdminAlertChannelId, NumberStyles.None, CultureInfo.InvariantCulture, out var channelId))
+        var destination = _discord.ResolveOwnerDestination();
+        if (config?.AdminAlertsEnabled != true || destination is null)
         {
             return;
         }
@@ -186,14 +187,15 @@ public sealed class HealthMonitoringService : BackgroundService
             description = config.Language == "en" ? english : german,
             color = active ? 0xE74C3Cu : 0x2ECC71u,
         });
-        await _database.EnqueueNotificationAsync(NotificationPriority.High, "admin-alert", $"channel:{channelId}", payload, $"health:{key}:{active}:{DateTime.UtcNow:yyyyMMddHHmmss}", DateTime.UtcNow, cancellationToken).ConfigureAwait(false);
+        await _database.EnqueueNotificationAsync(NotificationPriority.High, "admin-alert", destination, payload, $"health:{key}:{active}:{DateTime.UtcNow:yyyyMMddHHmmss}", DateTime.UtcNow, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task QueueOneOffAlertAsync(string german, string english, string dedupe, CancellationToken cancellationToken)
     {
         var config = Plugin.Instance?.Configuration;
-        if (config?.AdminAlertsEnabled != true || !ulong.TryParse(config.AdminAlertChannelId, NumberStyles.None, CultureInfo.InvariantCulture, out var channelId)) return;
+        var destination = _discord.ResolveOwnerDestination();
+        if (config?.AdminAlertsEnabled != true || destination is null) return;
         var payload = JsonSerializer.Serialize(new { title = "⚠️ Jellix", description = config.Language == "en" ? english : german, color = 0xE74C3Cu });
-        await _database.EnqueueNotificationAsync(NotificationPriority.High, "admin-alert", $"channel:{channelId}", payload, dedupe, DateTime.UtcNow, cancellationToken).ConfigureAwait(false);
+        await _database.EnqueueNotificationAsync(NotificationPriority.High, "admin-alert", destination, payload, dedupe, DateTime.UtcNow, cancellationToken).ConfigureAwait(false);
     }
 }

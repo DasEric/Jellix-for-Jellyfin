@@ -59,9 +59,11 @@ public sealed class JellixController : ControllerBase
 
     [HttpGet("Status")]
     [Authorize]
-    public IActionResult Status()
+    public async Task<IActionResult> Status(CancellationToken cancellationToken)
     {
         var config = Plugin.Instance?.Configuration;
+        var userId = CurrentUserId();
+        var link = await _database.FindLinkByJellyfinAsync(userId, cancellationToken).ConfigureAwait(false);
         return Ok(new
         {
             botEnabled = config?.BotEnabled == true,
@@ -69,7 +71,25 @@ public sealed class JellixController : ControllerBase
             selfLinkEnabled = config?.SelfLinkEnabled == true,
             passwordChangeEnabled = config?.PasswordChangeEnabled == true,
             language = config?.Language ?? "de",
+            discordLinked = link is not null,
         });
+    }
+
+    [HttpDelete("Link")]
+    [Authorize]
+    public async Task<IActionResult> UnlinkCurrentUser(CancellationToken cancellationToken)
+    {
+        var userId = CurrentUserId();
+        if (!_rateLimiter.TryConsume(userId.ToString("N"), "unlink", 5, RateWindow))
+        {
+            return TooManyRequests();
+        }
+
+        var link = await _database.FindLinkByJellyfinAsync(userId, cancellationToken).ConfigureAwait(false);
+        if (link is null) return NotFound(new { error = "This Jellyfin account is not linked to Discord." });
+        await _database.UnlinkUserAsync(link.GuildId, link.DiscordUserId, cancellationToken).ConfigureAwait(false);
+        await TryWriteAuditAsync("jellyfin-user", userId.ToString("N"), "account-unlinked", "discord-user", link.DiscordUserId, cancellationToken).ConfigureAwait(false);
+        return NoContent();
     }
 
     [HttpPost("LinkCode")]

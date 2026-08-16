@@ -7,7 +7,7 @@ namespace Jellyfin.Plugin.Jellix.Data;
 /// <summary>Transactional persistent state owned by Jellix.</summary>
 public sealed class JellixDatabase : IDisposable
 {
-    private const int CurrentSchemaVersion = 3;
+    private const int CurrentSchemaVersion = 4;
     private readonly string _connectionString;
     private readonly string _databasePath;
     private readonly SemaphoreSlim _migrationLock = new(1, 1);
@@ -56,6 +56,7 @@ public sealed class JellixDatabase : IDisposable
             await ExecuteAsync(connection, SchemaSql, cancellationToken).ConfigureAwait(false);
             await EnsureColumnAsync(connection, "PlaybackSessions", "NightWatchSeconds", "INTEGER NOT NULL DEFAULT 0 CHECK(NightWatchSeconds >= 0)", cancellationToken).ConfigureAwait(false);
             await EnsureColumnAsync(connection, "PlaybackSessions", "CompletedUtc", "TEXT NULL", cancellationToken).ConfigureAwait(false);
+            await EnsureColumnAsync(connection, "AccessRequests", "DecisionReason", "TEXT NULL", cancellationToken).ConfigureAwait(false);
             await ExecuteAsync(connection, "CREATE INDEX IF NOT EXISTS IX_Playback_UserCompleted ON PlaybackSessions(JellyfinUserId, CompletedUtc);", cancellationToken).ConfigureAwait(false);
             await ExecuteAsync(connection, "UPDATE PlaybackSessions SET CompletedUtc=COALESCE(EndedUtc, LastEventUtc) WHERE Completed=1 AND CompletedUtc IS NULL;", cancellationToken).ConfigureAwait(false);
             await ExecuteAsync(connection, "INSERT OR IGNORE INTO PlaybackSegments(SessionKey, CumulativeWatchSeconds, EventUtc, WatchSeconds) SELECT SessionKey, ActualWatchSeconds, LastEventUtc, ActualWatchSeconds FROM PlaybackSessions WHERE ActualWatchSeconds>0;", cancellationToken).ConfigureAwait(false);
@@ -561,25 +562,28 @@ public sealed class JellixDatabase : IDisposable
     {
         await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT Id, GuildId, DiscordUserId, RequestedName, Status, CreatedUtc, DecidedUtc, DecidedBy FROM AccessRequests WHERE Id=$id;";
+        command.CommandText = "SELECT Id, GuildId, DiscordUserId, RequestedName, Status, CreatedUtc, DecidedUtc, DecidedBy, DecisionReason FROM AccessRequests WHERE Id=$id;";
         command.Parameters.AddWithValue("$id", id);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? ReadAccessRequest(reader) : null;
     }
 
-    public async Task<bool> DecideAccessRequestAsync(long id, string status, string decidedBy, CancellationToken cancellationToken)
+    public async Task<bool> DecideAccessRequestAsync(long id, string status, string decidedBy, string? reason, CancellationToken cancellationToken)
     {
         if (status is not ("approved" or "rejected"))
         {
             throw new ArgumentOutOfRangeException(nameof(status));
         }
 
+        reason = reason?.Trim();
+        if (reason?.Length > 500) reason = reason[..500];
         await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
-        command.CommandText = "UPDATE AccessRequests SET Status=$status, DecidedUtc=$utc, DecidedBy=$by WHERE Id=$id AND Status='pending';";
+        command.CommandText = "UPDATE AccessRequests SET Status=$status, DecidedUtc=$utc, DecidedBy=$by, DecisionReason=$reason WHERE Id=$id AND Status='pending';";
         command.Parameters.AddWithValue("$status", status);
         command.Parameters.AddWithValue("$utc", FormatUtc(DateTime.UtcNow));
         command.Parameters.AddWithValue("$by", decidedBy);
+        command.Parameters.AddWithValue("$reason", string.IsNullOrWhiteSpace(reason) ? DBNull.Value : reason);
         command.Parameters.AddWithValue("$id", id);
         return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
     }
@@ -1039,7 +1043,7 @@ public sealed class JellixDatabase : IDisposable
         => new(reader.GetString(0), reader.GetString(1), Guid.Parse(reader.GetString(2)), ParseUtc(reader.GetString(3)), reader.GetString(4));
 
     private static AccessRequestRecord ReadAccessRequest(SqliteDataReader reader)
-        => new(reader.GetInt64(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4), ParseUtc(reader.GetString(5)), reader.IsDBNull(6) ? null : ParseUtc(reader.GetString(6)), reader.IsDBNull(7) ? null : reader.GetString(7));
+        => new(reader.GetInt64(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4), ParseUtc(reader.GetString(5)), reader.IsDBNull(6) ? null : ParseUtc(reader.GetString(6)), reader.IsDBNull(7) ? null : reader.GetString(7), reader.IsDBNull(8) ? null : reader.GetString(8));
 
     private static async Task<string?> ScalarStringAsync(SqliteConnection connection, string sql, Guid userId, DateTime? sinceUtc, CancellationToken cancellationToken)
     {
@@ -1152,7 +1156,8 @@ public sealed class JellixDatabase : IDisposable
           Status TEXT NOT NULL,
           CreatedUtc TEXT NOT NULL,
           DecidedUtc TEXT NULL,
-          DecidedBy TEXT NULL
+          DecidedBy TEXT NULL,
+          DecisionReason TEXT NULL
         );
         CREATE UNIQUE INDEX IF NOT EXISTS UX_AccessRequests_Open ON AccessRequests(GuildId, DiscordUserId) WHERE Status='pending';
         CREATE TABLE IF NOT EXISTS AuditLog(

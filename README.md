@@ -2,6 +2,8 @@
 
 Jellix connects Jellyfin with Discord. It provides secure account tools, persistent playback statistics, achievements, recommendations, notifications, sticky messages, onboarding, administration features, and an optional MediaForge request integration.
 
+For every Discord command, option, permission, visibility rule, and the complete sticky workflow, see the [command guide](COMMANDS.md).
+
 ## Requirements
 
 - Jellyfin 10.11 or newer
@@ -75,7 +77,9 @@ The `/account` command opens a private dashboard with buttons for password chang
 - Allow Discord users to request Jellyfin access.
 - Limit every Discord user to one pending request.
 - Apply a configurable cooldown after rejection.
-- Let Discord administrators approve or reject requests with buttons.
+- Send a review embed by direct message to the Discord server owner, with an optional configured channel fallback.
+- Let only the Discord server owner approve or reject requests with buttons.
+- Allow an optional rejection reason and deliver it to the requesting user.
 - Create approved Jellyfin users without administrator permissions.
 - Link the new account automatically and optionally assign the streaming role.
 - Deliver a secure, single-use password setup link to the new user.
@@ -119,6 +123,7 @@ The integration requires the protocol-v1 Jellix bridge included with MediaForge 
 - Provide public and administrator-specific help commands.
 - Show restricted public status information and additional system details to administrators.
 - Warn administrators about Discord disconnects, MediaForge failures, invalid MediaForge API keys, failed downloads, failed library scans, and available Jellyfin updates.
+- Deliver administrator alerts, including available Jellyfin updates, either by direct message to the Discord server owner or to a configured channel.
 - Retain and prune audit records according to the configured retention period.
 - Deliver background notifications through a persistent priority queue with retries and deduplication.
 
@@ -143,6 +148,8 @@ Enable Discord's Developer Mode to copy server, role, channel, and user IDs.
 ## Linking an account
 
 Open **Connect Discord** in Jellyfin, create a one-time code, and enter it with `/link` in Discord. When German is selected, the command is `/verbinden`. Administrators can also create links directly from the Jellix configuration page.
+
+After linking, the Jellyfin menu entry changes to **Discord Connected**. Opening it again allows the user to unlink after a confirmation prompt.
 
 Manual account assignment does not require the Discord bot to be online. It requires a valid Discord server ID, Discord user ID, and an existing Jellyfin user. After updating Jellix, restart Jellyfin and reload the administrator page so the latest configuration script is used.
 

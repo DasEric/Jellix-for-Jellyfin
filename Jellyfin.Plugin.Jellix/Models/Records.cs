@@ -70,7 +70,8 @@ public sealed record AccessRequestRecord(
     string Status,
     DateTime CreatedUtc,
     DateTime? DecidedUtc,
-    string? DecidedBy);
+    string? DecidedBy,
+    string? DecisionReason);
 
 public sealed record AuditRecord(
     long Id,

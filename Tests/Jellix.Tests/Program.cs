@@ -137,6 +137,12 @@ static async Task TestDatabaseAsync()
         var accessId = await database.CreateAccessRequestAsync("guild", "discord", "Eric", CancellationToken.None).ConfigureAwait(false);
         await database.CancelPendingAccessRequestAsync(accessId, CancellationToken.None).ConfigureAwait(false);
         Equal<AccessRequestRecord?>(null, await database.GetAccessRequestAsync(accessId, CancellationToken.None).ConfigureAwait(false));
+        var rejectedId = await database.CreateAccessRequestAsync("guild", "discord", "Eric", CancellationToken.None).ConfigureAwait(false);
+        True(await database.DecideAccessRequestAsync(rejectedId, "rejected", "owner", "No capacity available.", CancellationToken.None).ConfigureAwait(false));
+        var rejected = await database.GetAccessRequestAsync(rejectedId, CancellationToken.None).ConfigureAwait(false);
+        Equal("rejected", rejected?.Status);
+        Equal("No capacity available.", rejected?.DecisionReason);
+        False(await database.DecideAccessRequestAsync(rejectedId, "approved", "owner", null, CancellationToken.None).ConfigureAwait(false));
         var baselineId = Guid.NewGuid();
         await database.SeedLibraryItemsAsync([baselineId], CancellationToken.None).ConfigureAwait(false);
         False(await database.IsLibraryItemPendingAsync(baselineId, CancellationToken.None).ConfigureAwait(false));
@@ -207,6 +213,13 @@ static async Task TestDatabaseMigrationAsync()
                   'legacy', $user, $item, 'Movie', NULL, 'Legacy movie', NULL,
                   $time, $time, 42, 100, 100, $time, 1, 'Legacy device'
                 );
+                CREATE TABLE AccessRequests(
+                  Id INTEGER PRIMARY KEY AUTOINCREMENT, GuildId TEXT NOT NULL, DiscordUserId TEXT NOT NULL,
+                  RequestedName TEXT NOT NULL, Status TEXT NOT NULL, CreatedUtc TEXT NOT NULL,
+                  DecidedUtc TEXT NULL, DecidedBy TEXT NULL
+                );
+                INSERT INTO AccessRequests(GuildId, DiscordUserId, RequestedName, Status, CreatedUtc)
+                VALUES('guild', 'discord', 'Legacy', 'pending', $time);
                 """;
             command.Parameters.AddWithValue("$user", Guid.NewGuid().ToString("N"));
             command.Parameters.AddWithValue("$item", Guid.NewGuid().ToString("N"));
@@ -225,6 +238,10 @@ static async Task TestDatabaseMigrationAsync()
         Equal(0L, reader.GetInt64(0));
         False(reader.IsDBNull(1));
         Equal(42L, reader.GetInt64(2));
+        await reader.DisposeAsync().ConfigureAwait(false);
+        verify.CommandText = "SELECT DecisionReason FROM AccessRequests WHERE RequestedName='Legacy';";
+        var decisionReason = await verify.ExecuteScalarAsync().ConfigureAwait(false);
+        True(decisionReason is null or DBNull);
     }
     finally
     {
