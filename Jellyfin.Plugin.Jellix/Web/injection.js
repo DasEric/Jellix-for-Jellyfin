@@ -15,7 +15,10 @@
     if (!enabled) { if (existing) existing.remove(); return; }
     if (existing) {
       const label = existing.querySelector('.navMenuOptionText');
-      if (label) label.textContent = linkLabel();
+      if (label) {
+        const newLabel = linkLabel();
+        if (label.textContent !== newLabel) label.textContent = newLabel;
+      }
       return;
     }
     if (!client()) return;
