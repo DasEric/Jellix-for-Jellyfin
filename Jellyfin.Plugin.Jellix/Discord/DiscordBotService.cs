@@ -94,6 +94,7 @@ public sealed class DiscordBotService : BackgroundService
         _client.Ready += OnReadyAsync;
         _client.SlashCommandExecuted += OnSlashCommandAsync;
         _client.ButtonExecuted += OnButtonAsync;
+        _client.ModalSubmitted += OnModalSubmittedAsync;
         _client.SelectMenuExecuted += OnSelectMenuAsync;
         _client.MessageCommandExecuted += OnMessageCommandAsync;
         _client.MessageReceived += OnMessageReceivedAsync;
@@ -105,6 +106,16 @@ public sealed class DiscordBotService : BackgroundService
     public bool IsReady => _client.ConnectionState == ConnectionState.Connected;
 
     public IReadOnlyList<string> ConfigurationIssues => _configurationIssues;
+
+    public string? ResolveOwnerDestination()
+    {
+        var config = Plugin.Instance?.Configuration;
+        return config?.AdminAlertMode == "channel" && ulong.TryParse(config.AdminAlertChannelId, out _)
+            ? "channel:" + config.AdminAlertChannelId
+            : ulong.TryParse(config?.GuildId, out var guildId) && _client.GetGuild(guildId) is { } guild
+                ? "dm:" + guild.OwnerId.ToString(CultureInfo.InvariantCulture)
+                : null;
+    }
 
     public override async Task StartAsync(CancellationToken cancellationToken)
     {
@@ -306,7 +317,7 @@ public sealed class DiscordBotService : BackgroundService
 
         var commands = BuildCommands(_mediaForge.IsAvailable);
         var expectedNames = commands.Select(value => value.Name.Value).OrderBy(value => value, StringComparer.Ordinal).ToArray();
-        var schema = "schema-v2|" + typeof(Plugin).Assembly.GetName().Version + "|" + string.Join('|', expectedNames) + "|" + config.Language + "|" + config.MediaForgeEnabled + "|" + _mediaForge.IsAvailable;
+        var schema = "schema-v3|" + typeof(Plugin).Assembly.GetName().Version + "|" + string.Join('|', expectedNames) + "|" + config.Language + "|" + config.MediaForgeEnabled + "|" + _mediaForge.IsAvailable;
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(schema)));
         var existingHash = await _database.GetBotStateAsync("command-schema-hash", cancellationToken).ConfigureAwait(false);
         var existing = await guild.GetApplicationCommandsAsync().ConfigureAwait(false);
@@ -347,8 +358,8 @@ public sealed class DiscordBotService : BackgroundService
             ("Achievement-Kanal", config.AchievementChannelId, config.AchievementsEnabled && config.AchievementNotificationMode == "channel"),
             ("Anfragen-Kanal", config.RequestNotificationChannelId, config.MediaForgeEnabled && config.RequestNotificationMode == "channel"),
             ("Neuigkeiten-Kanal", config.NewMediaChannelId, config.NewMediaNotificationsEnabled || config.NewEpisodeNotificationsEnabled),
-            ("Zugangsanfragen-Kanal", config.AccessRequestChannelId, config.AccessRequestsEnabled),
-            ("Warnungs-Kanal", config.AdminAlertChannelId, config.AdminAlertsEnabled),
+            ("Fallback-Kanal für Zugangsanfragen", config.AccessRequestChannelId, false),
+            ("Warnungs-Kanal", config.AdminAlertChannelId, config.AdminAlertsEnabled && config.AdminAlertMode == "channel"),
         };
         foreach (var channel in channels.Where(static value => value.Required))
         {
@@ -357,6 +368,7 @@ public sealed class DiscordBotService : BackgroundService
 
         if (config.PasswordChangeEnabled && !PasswordTicketService.IsPublicUrlConfigured(config.JellyfinPublicUrl)) issues.Add("Öffentliche Jellyfin-URL fehlt oder ist unsicher.");
         if (config.AccessRequestsEnabled && !config.PasswordChangeEnabled) issues.Add("Zugangsanfragen benötigen die Passwortänderung.");
+        if (config.AccessRequestsEnabled && guild.OwnerId == 0) issues.Add("Discord-Server-Owner konnte nicht ermittelt werden.");
         if (config.MediaForgeEnabled && !_mediaForge.IsAvailable) issues.Add("MediaForge-Jellix-Brücke fehlt.");
         _configurationIssues = issues.ToArray();
         foreach (var issue in issues) LogDiscordWarning(_logger, issue, null);
@@ -473,11 +485,16 @@ public sealed class DiscordBotService : BackgroundService
         var streamingRole = Plugin.Instance?.Configuration.StreamingRoleId;
         var streamingAllowed = string.IsNullOrWhiteSpace(streamingRole)
             || (ulong.TryParse(streamingRole, out var streamingRoleId) && command.User is SocketGuildUser guildUser && guildUser.Roles.Any(role => role.Id == streamingRoleId));
-        var embed = new EmbedBuilder().WithTitle("👤 Jellyfin Account")
-            .WithDescription(DiscordText.T(
-                $"Benutzer: **{Escape(Limit(user?.Username ?? "Unbekannt", 180))}**\nDiscord: **@{Escape(Limit(command.User.Username, 100))}**\nAccount: 🟢 Verbunden\nStreaming: {(streamingAllowed ? "🟢 Aktiv" : "🔴 Keine Rolle")}",
-                $"User: **{Escape(Limit(user?.Username ?? "Unknown", 180))}**\nDiscord: **@{Escape(Limit(command.User.Username, 100))}**\nAccount: 🟢 Linked\nStreaming: {(streamingAllowed ? "🟢 Active" : "🔴 Role missing")}"))
-            .WithColor(Color.Teal).Build();
+        var embed = JellixEmbeds.Create(
+                "👤 " + DiscordText.T("Dein Jellyfin-Konto", "Your Jellyfin account"),
+                DiscordText.T("Alles Wichtige zu deinem Konto an einem Ort.", "Everything important about your account in one place."),
+                JellixEmbeds.Primary,
+                DiscordText.T("Privates Konto-Menü", "Private account menu"))
+            .AddField(DiscordText.T("Jellyfin-Benutzer", "Jellyfin user"), $"**{Escape(Limit(user?.Username ?? DiscordText.T("Unbekannt", "Unknown"), 180))}**", true)
+            .AddField("Discord", $"**@{Escape(Limit(command.User.Username, 100))}**", true)
+            .AddField(DiscordText.T("Verbindung", "Connection"), DiscordText.T("🟢 Verbunden", "🟢 Linked"), true)
+            .AddField("Streaming", streamingAllowed ? DiscordText.T("🟢 Aktiv", "🟢 Active") : DiscordText.T("🔴 Rolle fehlt", "🔴 Role missing"), true)
+            .Build();
         var components = new ComponentBuilder()
             .WithButton(DiscordText.T("🔑 Passwort ändern", "🔑 Change password"), "account:password", disabled: Plugin.Instance?.Configuration.PasswordChangeEnabled != true || !PasswordTicketService.IsPublicUrlConfigured())
             .WithButton(DiscordText.T("📊 Statistiken", "📊 Statistics"), "account:stats", disabled: Plugin.Instance?.Configuration.StatisticsEnabled != true)
@@ -502,7 +519,7 @@ public sealed class DiscordBotService : BackgroundService
         var link = await RequireLinkAsync(command).ConfigureAwait(false);
         if (link is null) return;
         var period = GetString(command, DiscordText.Command("zeitraum", "period"), "all");
-        await command.DeferAsync(ephemeral: true).ConfigureAwait(false);
+        await command.DeferAsync().ConfigureAwait(false);
         await SendStatsAsync(command, link, period, editOriginal: true).ConfigureAwait(false);
     }
 
@@ -517,14 +534,20 @@ public sealed class DiscordBotService : BackgroundService
             .AppendLine($"⏱️ Watchtime: **{FormatDuration(summary.WatchSeconds)}**");
         if (!string.IsNullOrWhiteSpace(summary.CurrentSeries)) description.AppendLine($"🔥 {DiscordText.T("Aktuelle Serie", "Current series")}: **{Escape(Limit(summary.CurrentSeries, 200))}**");
         if (!string.IsNullOrWhiteSpace(summary.TopSeries)) description.AppendLine($"⭐ {DiscordText.T("Meistgesehene Serie", "Most watched series")}: **{Escape(Limit(summary.TopSeries, 200))}**");
-        var embed = new EmbedBuilder().WithTitle(Limit($"🎬 {Escape(user?.Username ?? "Jellix")} – Jellyfin Stats", 256)).WithDescription(Limit(description.ToString(), 4096)).WithFooter(DiscordText.T("Erfassung seit Installation von Jellix", "Recorded since Jellix was installed")).WithColor(Color.Blue).Build();
+        var embed = JellixEmbeds.Create(
+                Limit($"📊 {Escape(user?.Username ?? "Jellix")} – Jellyfin Stats", 256),
+                Limit(description.ToString(), 4096),
+                JellixEmbeds.Primary,
+                DiscordText.T("Tatsächliche Wiedergabezeit • Erfassung seit der Jellix-Installation", "Actual playback time • Recorded since Jellix was installed"))
+            .AddField(DiscordText.T("Zeitraum", "Period"), PeriodLabel(period), true)
+            .Build();
         if (editOriginal)
         {
             await interaction.ModifyOriginalResponseAsync(properties => properties.Embed = embed).ConfigureAwait(false);
         }
         else
         {
-            await interaction.FollowupAsync(embed: embed, ephemeral: true, allowedMentions: AllowedMentions.None).ConfigureAwait(false);
+            await interaction.FollowupAsync(embed: embed, ephemeral: false, allowedMentions: AllowedMentions.None).ConfigureAwait(false);
         }
     }
 
@@ -553,7 +576,14 @@ public sealed class DiscordBotService : BackgroundService
             lines.Add($"{prefix} {name} — **{value}**");
         }
 
-        var embed = new EmbedBuilder().WithTitle("🏆 Jellyfin " + DiscordText.T("Bestenliste", "Leaderboard")).WithDescription(lines.Count == 0 ? DiscordText.T("Noch keine öffentlichen Daten.", "No public data yet.") : string.Join('\n', lines)).WithColor(Color.Gold).Build();
+        var embed = JellixEmbeds.Create(
+                "🏆 Jellyfin " + DiscordText.T("Bestenliste", "Leaderboard"),
+                lines.Count == 0 ? DiscordText.T("Noch keine öffentlichen Daten.", "No public data yet.") : string.Join('\n', lines),
+                JellixEmbeds.Gold,
+                DiscordText.T("Nur Benutzer mit aktivierter Teilnahme werden angezeigt", "Only users who opted in are shown"))
+            .AddField(DiscordText.T("Kategorie", "Category"), LeaderboardCategoryLabel(category), true)
+            .AddField(DiscordText.T("Zeitraum", "Period"), PeriodLabel(period), true)
+            .Build();
         await command.ModifyOriginalResponseAsync(properties => properties.Embed = embed).ConfigureAwait(false);
     }
 
@@ -570,8 +600,13 @@ public sealed class DiscordBotService : BackgroundService
         if (link is null) return;
         var ids = await _database.ListAchievementsAsync(link.JellyfinUserId, CancellationToken.None).ConfigureAwait(false);
         var names = ids.Select(AchievementName).ToArray();
-        var embed = new EmbedBuilder().WithTitle("🏆 " + DiscordText.T("Deine Erfolge", "Your achievements")).WithDescription(names.Length == 0 ? DiscordText.T("Noch keine Erfolge freigeschaltet.", "No achievements unlocked yet.") : string.Join('\n', names)).WithColor(Color.Gold).Build();
-        await command.RespondAsync(embed: embed, ephemeral: true).ConfigureAwait(false);
+        var embed = JellixEmbeds.Create(
+                "🏆 " + DiscordText.T("Deine Erfolge", "Your achievements"),
+                names.Length == 0 ? DiscordText.T("Noch keine Erfolge freigeschaltet. Deine nächste Watch-Session zählt!", "No achievements unlocked yet. Your next watch session counts!") : string.Join('\n', names),
+                JellixEmbeds.Gold,
+                DiscordText.T($"{names.Length} Erfolge freigeschaltet", $"{names.Length} achievements unlocked"))
+            .Build();
+        await command.RespondAsync(embed: embed).ConfigureAwait(false);
     }
 
     private async Task HandlePrivacyAsync(SocketSlashCommand command)
@@ -585,9 +620,9 @@ public sealed class DiscordBotService : BackgroundService
     private async Task SendPrivacyAsync(IDiscordInteraction interaction, UserLink link, bool update = false)
     {
         var value = await _database.GetPrivacyAsync(link.JellyfinUserId, CancellationToken.None).ConfigureAwait(false);
-        var embed = new EmbedBuilder().WithTitle("🔒 " + DiscordText.T("Deine Datenschutzeinstellungen", "Your privacy settings"))
+        var embed = JellixEmbeds.Create("🔒 " + DiscordText.T("Deine Datenschutzeinstellungen", "Your privacy settings"), color: JellixEmbeds.Private, footer: DiscordText.T("Nur für dich sichtbar", "Only visible to you"))
             .WithDescription($"{Check(value.ShowInLeaderboard)} {DiscordText.T("Im Leaderboard erscheinen", "Appear in leaderboard")}\n{Check(value.ShowNamePublicly)} {DiscordText.T("Namen öffentlich anzeigen", "Show name publicly")}\n{Check(value.ShowNowPlaying)} Now Playing\n{Check(value.AnnounceAchievements)} {DiscordText.T("Achievement-Meldungen", "Achievement announcements")}")
-            .WithColor(Color.DarkBlue).Build();
+            .Build();
         var components = new ComponentBuilder()
             .WithButton(DiscordText.T("Leaderboard", "Leaderboard"), "privacy:leaderboard")
             .WithButton(DiscordText.T("Name", "Name"), "privacy:name")
@@ -634,7 +669,12 @@ public sealed class DiscordBotService : BackgroundService
             lines.Add(user + title + $"\n{FormatPosition(session.PlayState.PositionTicks, item.RunTimeTicks)}");
         }
 
-        var embed = new EmbedBuilder().WithTitle($"🟢 {lines.Count} {DiscordText.T("Streams aktiv", "active streams")}").WithDescription(lines.Count == 0 ? DiscordText.T("Derzeit läuft nichts.", "Nothing is playing right now.") : JoinWithinLimit(lines, "\n\n", 4096)).WithColor(Color.Green).Build();
+        var embed = JellixEmbeds.Create(
+                $"🟢 {lines.Count} {DiscordText.T("Streams aktiv", "active streams")}",
+                lines.Count == 0 ? DiscordText.T("Derzeit läuft nichts – Zeit für den nächsten Filmabend.", "Nothing is playing right now — time for the next movie night.") : JoinWithinLimit(lines, "\n\n", 4096),
+                JellixEmbeds.Success,
+                DiscordText.T("Live-Übersicht aus Jellyfin", "Live view from Jellyfin"))
+            .Build();
         await command.RespondAsync(embed: embed, ephemeral: mode == "admin", allowedMentions: AllowedMentions.None).ConfigureAwait(false);
     }
 
@@ -647,7 +687,7 @@ public sealed class DiscordBotService : BackgroundService
         }
 
         if (!RequireStreamingRole(command)) return;
-        await command.DeferAsync(ephemeral: true).ConfigureAwait(false);
+        await command.DeferAsync().ConfigureAwait(false);
         var type = GetString(command, DiscordText.Command("typ", "type"), "movie");
         var genre = GetString(command, "genre", string.Empty);
         var unseen = GetBoolean(command, DiscordText.Command("ungesehen", "unseen"));
@@ -695,7 +735,12 @@ public sealed class DiscordBotService : BackgroundService
         if (selected.RunTimeTicks.HasValue) description.AppendLine($"⏱️ {TimeSpan.FromTicks(selected.RunTimeTicks.Value).TotalMinutes:0} min");
         if (selected.ProductionYear.HasValue) description.AppendLine($"📅 {selected.ProductionYear}");
         if (!string.IsNullOrWhiteSpace(selected.Overview)) description.AppendLine().Append(Escape(selected.Overview.Length > 700 ? selected.Overview[..700] + "…" : selected.Overview));
-        var embed = new EmbedBuilder().WithTitle(Limit("🎲 " + Escape(selected.Name), 256)).WithDescription(Limit(description.ToString(), 4096)).WithColor(Color.Purple).Build();
+        var embed = JellixEmbeds.Create(
+                Limit("🎲 " + Escape(selected.Name), 256),
+                Limit(description.ToString(), 4096),
+                JellixEmbeds.Secondary,
+                DiscordText.T("Zufällig aus deiner Jellyfin-Bibliothek gewählt", "Randomly selected from your Jellyfin library"))
+            .Build();
         await command.ModifyOriginalResponseAsync(properties => properties.Embed = embed).ConfigureAwait(false);
     }
 
@@ -744,21 +789,51 @@ public sealed class DiscordBotService : BackgroundService
                 .AppendLine($"Queue: {await _database.GetPendingNotificationCountAsync(CancellationToken.None).ConfigureAwait(false)}");
         }
 
-        await command.RespondAsync(embed: new EmbedBuilder().WithTitle("Jellix Status").WithDescription(description.ToString()).WithColor(Color.Green).Build(), ephemeral: admin).ConfigureAwait(false);
+        var statusEmbed = JellixEmbeds.Create(
+                admin ? "🛠️ Jellix Admin Status" : "🟢 Jellyfin Status",
+                description.ToString(),
+                JellixEmbeds.Success,
+                admin ? DiscordText.T("Interne Details • nur für Administratoren", "Internal details • administrators only") : DiscordText.T("Öffentlicher Serverstatus", "Public server status"))
+            .Build();
+        await command.RespondAsync(embed: statusEmbed, ephemeral: admin).ConfigureAwait(false);
     }
 
     private async Task HandleHelpAsync(SocketSlashCommand command, bool admin)
     {
         if (admin && !RequireAdmin(command)) return;
-        var body = admin
-            ? DiscordText.T("`/admin-hilfe` – diese Übersicht\n`/sticky` – Sticky verwalten\nApps → Als Sticky markieren\nZugangsanfragen über die Freigabe-Buttons bearbeiten\nWeitere Einstellungen befinden sich im Jellyfin-Dashboard.", "`/admin-help` – this overview\n`/sticky` – manage sticky messages\nApps → Set as sticky\nProcess access requests using the approval buttons\nFurther settings are in the Jellyfin dashboard.")
-            : DiscordText.T("`/konto` · `/verbinden` · `/statistik` · `/bestenliste` · `/erfolge` · `/datenschutz` · `/aktuelle-streams` · `/zufall` · `/jellyfin-zugang` · `/konto-entsperren` · `/status`", "`/account` · `/link` · `/stats` · `/leaderboard` · `/achievements` · `/privacy` · `/now-playing` · `/random` · `/jellyfin-access` · `/unlock-account` · `/status`");
-        if (Plugin.Instance?.Configuration.MediaForgeEnabled == true && _mediaForge.IsAvailable)
+        var config = Plugin.Instance?.Configuration;
+        var embedBuilder = JellixEmbeds.Create(
+            admin ? "🛠️ Jellix Admin Command Center" : "✨ Jellix Command Guide",
+            admin
+                ? DiscordText.T("Werkzeuge für Administration, Freigaben und Stickies.", "Tools for administration, approvals, and stickies.")
+                : DiscordText.T("Dein direkter Weg zu Jellyfin – einfach einen Befehl auswählen.", "Your direct path to Jellyfin — simply choose a command."),
+            admin ? JellixEmbeds.Warning : JellixEmbeds.Primary,
+            admin ? DiscordText.T("Nur für Administratoren", "Administrators only") : DiscordText.T("Normale Antworten bleiben im Kanal sichtbar", "Normal responses remain visible in the channel"));
+
+        if (admin)
         {
-            body += DiscordText.T("\n`/film-anfrage` · `/serien-anfrage` · `/anfragen`", "\n`/request-movie` · `/request-series` · `/requests`");
+            embedBuilder
+                .AddField("📌 Sticky", DiscordText.T("`/sticky status` · `/sticky refresh` · `/sticky remove`\n**Erstellen:** Nachricht rechtsklicken → **Apps** → **Als Sticky markieren**", "`/sticky status` · `/sticky refresh` · `/sticky remove`\n**Create:** Right-click a message → **Apps** → **Set as sticky**"))
+                .AddField(DiscordText.T("👤 Zugangsanfragen", "👤 Access requests"), DiscordText.T("Der Discord-Server-Owner erhält eine DM mit **Annehmen** und **Ablehnen**. Beim Ablehnen kann ein Grund angegeben werden.", "The Discord server owner receives a DM with **Accept** and **Reject**. A rejection reason can be provided."))
+                .AddField(DiscordText.T("⚙️ Verwaltung", "⚙️ Administration"), DiscordText.T("Bot, Rollen, Kanäle, Warnungen und Funktionen werden im Jellyfin-Dashboard konfiguriert.", "Configure the bot, roles, channels, alerts, and features in the Jellyfin dashboard."));
+        }
+        else
+        {
+            embedBuilder
+                .AddField(DiscordText.T("👤 Konto", "👤 Account"), DiscordText.T("`/konto` – privates Konto-Menü\n`/verbinden code` – Discord verknüpfen\n`/datenschutz` – Privatsphäre ändern\n`/konto-entsperren` – eigenes Konto entsperren", "`/account` – private account menu\n`/link code` – link Discord\n`/privacy` – change privacy\n`/unlock-account` – unlock your own account"), false)
+                .AddField(DiscordText.T("📊 Community & Wiedergabe", "📊 Community & playback"), DiscordText.T("`/statistik zeitraum` – persönliche Statistik\n`/bestenliste kategorie zeitraum` – öffentliche Rangliste\n`/erfolge` – freigeschaltete Erfolge\n`/aktuelle-streams` – aktive Streams", "`/stats period` – personal statistics\n`/leaderboard category period` – public ranking\n`/achievements` – unlocked achievements\n`/now-playing` – active streams"), false)
+                .AddField(DiscordText.T("🎲 Entdecken", "🎲 Discover"), DiscordText.T("`/zufall` – Empfehlung mit optionalen Filtern\n`/status` – Jellyfin-Serverstatus", "`/random` – recommendation with optional filters\n`/status` – Jellyfin server status"), true);
+            if (config?.AccessRequestsEnabled == true)
+            {
+                embedBuilder.AddField(DiscordText.T("🚪 Zugang", "🚪 Access"), DiscordText.T("`/jellyfin-zugang name` – Zugang beantragen", "`/jellyfin-access name` – request access"), true);
+            }
+            if (config?.MediaForgeEnabled == true && _mediaForge.IsAvailable)
+            {
+                embedBuilder.AddField("🎬 MediaForge", DiscordText.T("`/film-anfrage suche`\n`/serien-anfrage suche`\n`/anfragen`", "`/request-movie query`\n`/request-series query`\n`/requests`"), true);
+            }
         }
 
-        var embed = new EmbedBuilder().WithTitle(admin ? "Jellix Admin" : "Jellix").WithDescription(body).WithColor(admin ? Color.Orange : Color.Blue).Build();
+        var embed = embedBuilder.Build();
         await command.RespondAsync(embed: embed, ephemeral: admin, allowedMentions: AllowedMentions.None).ConfigureAwait(false);
     }
 
@@ -767,8 +842,7 @@ public sealed class DiscordBotService : BackgroundService
         var config = Plugin.Instance?.Configuration;
         if (config?.AccessRequestsEnabled != true
             || !config.PasswordChangeEnabled
-            || !PasswordTicketService.IsPublicUrlConfigured(config.JellyfinPublicUrl)
-            || !ulong.TryParse(config.AccessRequestChannelId, out var channelId))
+            || !PasswordTicketService.IsPublicUrlConfigured(config.JellyfinPublicUrl))
         {
             await command.RespondAsync(DiscordText.T("Zugangsanfragen sind deaktiviert.", "Access requests are disabled."), ephemeral: true).ConfigureAwait(false);
             return;
@@ -805,9 +879,9 @@ public sealed class DiscordBotService : BackgroundService
             return;
         }
 
-        if (_client.GetChannel(channelId) is not IMessageChannel channel)
+        if (!ulong.TryParse(config.GuildId, out var configuredGuildId) || _client.GetGuild(configuredGuildId) is not { } guild)
         {
-            await command.RespondAsync(DiscordText.T("Der Kanal für Zugangsanfragen ist nicht erreichbar.", "The access request channel is unavailable."), ephemeral: true).ConfigureAwait(false);
+            await command.RespondAsync(DiscordText.T("Der konfigurierte Discord-Server ist nicht erreichbar.", "The configured Discord server is unavailable."), ephemeral: true).ConfigureAwait(false);
             return;
         }
 
@@ -815,9 +889,23 @@ public sealed class DiscordBotService : BackgroundService
         try
         {
             id = await _database.CreateAccessRequestAsync(guildId, discordId, requestedName, CancellationToken.None).ConfigureAwait(false);
-            var embed = new EmbedBuilder().WithTitle("👤 " + DiscordText.T("Neue Jellyfin-Anfrage", "New Jellyfin request")).WithDescription($"Discord: {command.User.Mention}\n{DiscordText.T("Benutzername", "Username")}: **{Escape(requestedName)}**").WithColor(Color.Orange).Build();
+            var embed = JellixEmbeds.Create(
+                    "👤 " + DiscordText.T("Neue Jellyfin-Zugangsanfrage", "New Jellyfin access request"),
+                    DiscordText.T("Bitte prüfe diese Anfrage und entscheide direkt über die Schaltflächen.", "Review this request and decide using the buttons below."),
+                    JellixEmbeds.Warning,
+                    DiscordText.T($"Anfrage #{id} • nur der Discord-Server-Owner kann entscheiden", $"Request #{id} • only the Discord server owner can decide"))
+                .AddField("Discord", $"{command.User.Mention}\n`{command.User.Id}`", true)
+                .AddField(DiscordText.T("Gewünschter Benutzername", "Requested username"), $"**{Escape(requestedName)}**", true)
+                .AddField(DiscordText.T("Nach Annahme", "After approval"), DiscordText.T("Jellyfin-Konto + Verknüpfung + optional Streaming-Rolle", "Jellyfin account + link + optional streaming role"), false)
+                .Build();
             var components = new ComponentBuilder().WithButton(DiscordText.T("Akzeptieren", "Accept"), $"access:approve:{id}", ButtonStyle.Success).WithButton(DiscordText.T("Ablehnen", "Reject"), $"access:reject:{id}", ButtonStyle.Danger).Build();
-            await channel.SendMessageAsync(embed: embed, components: components, allowedMentions: AllowedMentions.None).ConfigureAwait(false);
+            var delivered = await TrySendDmAsync(guild.OwnerId, embed, components).ConfigureAwait(false);
+            if (!delivered && ulong.TryParse(config.AccessRequestChannelId, out var fallbackChannelId) && _client.GetChannel(fallbackChannelId) is IMessageChannel fallbackChannel)
+            {
+                await fallbackChannel.SendMessageAsync(embed: embed, components: components, allowedMentions: AllowedMentions.None).ConfigureAwait(false);
+                delivered = true;
+            }
+            if (!delivered) throw new InvalidOperationException(DiscordText.T("Die Anfrage konnte dem Server-Owner nicht zugestellt werden.", "The request could not be delivered to the server owner."));
             await TryWriteAuditAsync("discord-user", discordId, "access-requested", "access-request", id.ToString(CultureInfo.InvariantCulture), requestedName).ConfigureAwait(false);
             await command.RespondAsync(DiscordText.T("✅ Deine Anfrage wurde gesendet.", "✅ Your request was submitted."), ephemeral: true).ConfigureAwait(false);
         }
@@ -844,7 +932,7 @@ public sealed class DiscordBotService : BackgroundService
             using var response = await _mediaForge.InvokeAsync("list", link.JellyfinUserId, user?.Username ?? "unknown", null, CancellationToken.None).ConfigureAwait(false);
             var items = response.RootElement.TryGetProperty("items", out var array) && array.ValueKind == JsonValueKind.Array ? array.EnumerateArray().Take(20).ToArray() : [];
             var lines = items.Select(FormatRequest).ToArray();
-            var embed = new EmbedBuilder().WithTitle(DiscordText.T("Deine Anfragen", "Your requests")).WithDescription(lines.Length == 0 ? DiscordText.T("Keine Anfragen vorhanden.", "No requests found.") : JoinWithinLimit(lines, "\n\n", 4096)).WithColor(Color.Blue).Build();
+            var embed = BuildRequestsEmbed(lines);
             await command.ModifyOriginalResponseAsync(properties => properties.Embed = embed).ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is MediaForgeBridgeException or MediaForgeBridgeUnavailableException)
@@ -902,7 +990,8 @@ public sealed class DiscordBotService : BackgroundService
 
     private async Task OnButtonAsync(SocketMessageComponent component)
     {
-        if (!RequireConfiguredGuild(component)) return;
+        var isAccessDecision = component.Data.CustomId.StartsWith("access:", StringComparison.Ordinal);
+        if (!isAccessDecision && !RequireConfiguredGuild(component)) return;
         if (!AllowInteraction(component, "button", 60)) return;
         try
         {
@@ -966,7 +1055,7 @@ public sealed class DiscordBotService : BackgroundService
                 using var response = await _mediaForge.InvokeAsync("list", link.JellyfinUserId, user?.Username ?? "unknown", null, CancellationToken.None).ConfigureAwait(false);
                 var items = response.RootElement.TryGetProperty("items", out var array) && array.ValueKind == JsonValueKind.Array ? array.EnumerateArray().Take(20).ToArray() : [];
                 var lines = items.Select(FormatRequest).ToArray();
-                var embed = new EmbedBuilder().WithTitle(DiscordText.T("Deine Anfragen", "Your requests")).WithDescription(lines.Length == 0 ? DiscordText.T("Keine Anfragen vorhanden.", "No requests found.") : JoinWithinLimit(lines, "\n\n", 4096)).WithColor(Color.Blue).Build();
+                var embed = BuildRequestsEmbed(lines);
                 await component.ModifyOriginalResponseAsync(properties => properties.Embed = embed).ConfigureAwait(false);
             }
             catch (Exception exception) when (exception is MediaForgeBridgeException or MediaForgeBridgeUnavailableException)
@@ -983,7 +1072,13 @@ public sealed class DiscordBotService : BackgroundService
             }
 
             var ids = await _database.ListAchievementsAsync(link.JellyfinUserId, CancellationToken.None).ConfigureAwait(false);
-            await component.RespondAsync(embed: new EmbedBuilder().WithTitle("🏆 " + DiscordText.T("Deine Erfolge", "Your achievements")).WithDescription(ids.Count == 0 ? DiscordText.T("Noch keine Erfolge.", "No achievements yet.") : string.Join('\n', ids.Select(AchievementName))).WithColor(Color.Gold).Build(), ephemeral: true).ConfigureAwait(false);
+            var achievementEmbed = JellixEmbeds.Create(
+                    "🏆 " + DiscordText.T("Deine Erfolge", "Your achievements"),
+                    ids.Count == 0 ? DiscordText.T("Noch keine Erfolge – bleib dran!", "No achievements yet — keep watching!") : string.Join('\n', ids.Select(AchievementName)),
+                    JellixEmbeds.Gold,
+                    DiscordText.T("Nur für dich sichtbar", "Only visible to you"))
+                .Build();
+            await component.RespondAsync(embed: achievementEmbed, ephemeral: true).ConfigureAwait(false);
         }
         else if (action == "privacy")
         {
@@ -1026,7 +1121,12 @@ public sealed class DiscordBotService : BackgroundService
         var lines = items.Select(item => item is MediaBrowser.Controller.Entities.TV.Episode episode
             ? $"📺 **{Escape(Limit(episode.SeriesName, 180))}** – S{episode.ParentIndexNumber:00}E{episode.IndexNumber:00}"
             : $"🎬 **{Escape(Limit(item.Name, 180))}**").ToArray();
-        var embed = new EmbedBuilder().WithTitle("📺 " + DiscordText.T("Weiterschauen", "Continue watching")).WithDescription(lines.Length == 0 ? DiscordText.T("Keine angefangenen Inhalte.", "Nothing to continue.") : JoinWithinLimit(lines, "\n", 4096)).WithColor(Color.Teal).Build();
+        var embed = JellixEmbeds.Create(
+                "📺 " + DiscordText.T("Weiterschauen", "Continue watching"),
+                lines.Length == 0 ? DiscordText.T("Keine angefangenen Inhalte. Zeit, etwas Neues zu entdecken!", "Nothing to continue. Time to discover something new!") : JoinWithinLimit(lines, "\n", 4096),
+                JellixEmbeds.Primary,
+                DiscordText.T("Nur für dich sichtbar", "Only visible to you"))
+            .Build();
         await component.RespondAsync(embed: embed, ephemeral: true).ConfigureAwait(false);
     }
 
@@ -1049,11 +1149,37 @@ public sealed class DiscordBotService : BackgroundService
 
     private async Task HandleAccessDecisionAsync(SocketMessageComponent component, string customId)
     {
-        if (!RequireAdmin(component)) return;
         var parts = customId.Split(':');
         if (parts.Length != 3 || parts[1] is not ("approve" or "reject") || !long.TryParse(parts[2], NumberStyles.None, CultureInfo.InvariantCulture, out var id))
         {
             await component.RespondAsync(DiscordText.T("Diese Aktion ist ungültig.", "This action is invalid."), ephemeral: true).ConfigureAwait(false);
+            return;
+        }
+        var initialRequest = await _database.GetAccessRequestAsync(id, CancellationToken.None).ConfigureAwait(false);
+        if (initialRequest is null || !IsAccessReviewer(component.User, initialRequest.GuildId))
+        {
+            await component.RespondAsync(DiscordText.T("Nur der Discord-Server-Owner darf diese Anfrage bearbeiten.", "Only the Discord server owner may process this request."), ephemeral: component.GuildId.HasValue).ConfigureAwait(false);
+            return;
+        }
+        if (initialRequest.Status != "pending")
+        {
+            await component.RespondAsync(DiscordText.T("Diese Anfrage wurde bereits bearbeitet.", "This request was already processed."), ephemeral: component.GuildId.HasValue).ConfigureAwait(false);
+            return;
+        }
+        if (parts[1] == "reject")
+        {
+            var modal = new ModalBuilder()
+                .WithTitle(DiscordText.T("Zugangsanfrage ablehnen", "Reject access request"))
+                .WithCustomId($"access-reject:{id}")
+                .AddTextInput(
+                    DiscordText.T("Grund (optional)", "Reason (optional)"),
+                    "reason",
+                    TextInputStyle.Paragraph,
+                    DiscordText.T("Kurze Begründung für den Benutzer", "Short explanation for the user"),
+                    maxLength: 500,
+                    required: false)
+                .Build();
+            await component.RespondWithModalAsync(modal).ConfigureAwait(false);
             return;
         }
         await _accessDecisionLock.WaitAsync().ConfigureAwait(false);
@@ -1063,18 +1189,6 @@ public sealed class DiscordBotService : BackgroundService
             if (request is null || request.Status != "pending")
             {
                 await component.RespondAsync(DiscordText.T("Diese Anfrage wurde bereits bearbeitet.", "This request was already processed."), ephemeral: true).ConfigureAwait(false);
-                return;
-            }
-
-            if (parts[1] == "reject")
-            {
-                await _database.DecideAccessRequestAsync(id, "rejected", component.User.Id.ToString(CultureInfo.InvariantCulture), CancellationToken.None).ConfigureAwait(false);
-                await TryWriteAuditAsync("discord-admin", component.User.Id.ToString(CultureInfo.InvariantCulture), "access-rejected", "access-request", id.ToString(CultureInfo.InvariantCulture), string.Empty).ConfigureAwait(false);
-                await component.UpdateAsync(properties => { properties.Content = DiscordText.T("Anfrage abgelehnt.", "Request rejected."); properties.Components = new ComponentBuilder().Build(); }).ConfigureAwait(false);
-                if (ulong.TryParse(request.DiscordUserId, NumberStyles.None, CultureInfo.InvariantCulture, out var rejectedUserId))
-                {
-                    _ = await TrySendDmAsync(rejectedUserId, DiscordText.T("Deine Jellyfin-Zugangsanfrage wurde abgelehnt.", "Your Jellyfin access request was rejected.")).ConfigureAwait(false);
-                }
                 return;
             }
 
@@ -1112,16 +1226,28 @@ public sealed class DiscordBotService : BackgroundService
                 linkCreated = true;
                 var ticket = await _passwordTickets.CreateAsync(createdUser.Id, request.DiscordUserId, CancellationToken.None).ConfigureAwait(false);
                 var url = PasswordTicketService.BuildUrl(ticket.Token);
-                approved = await _database.DecideAccessRequestAsync(id, "approved", component.User.Id.ToString(CultureInfo.InvariantCulture), CancellationToken.None).ConfigureAwait(false);
+                approved = await _database.DecideAccessRequestAsync(id, "approved", component.User.Id.ToString(CultureInfo.InvariantCulture), null, CancellationToken.None).ConfigureAwait(false);
                 if (!approved) throw new InvalidOperationException("The access request was already processed.");
 
                 await TryAssignStreamingRoleAsync(request.GuildId, request.DiscordUserId).ConfigureAwait(false);
                 var delivered = ulong.TryParse(request.DiscordUserId, NumberStyles.None, CultureInfo.InvariantCulture, out var discordUserId)
                     && await TrySendDmAsync(discordUserId, DiscordText.T($"Dein Jellyfin-Zugang wurde erstellt. Lege hier dein Passwort fest:\n{url}", $"Your Jellyfin access was created. Set your password here:\n{url}")).ConfigureAwait(false);
                 await TryWriteAuditAsync("discord-admin", component.User.Id.ToString(CultureInfo.InvariantCulture), "access-approved", "jellyfin-user", createdUser.Id.ToString("N"), string.Empty).ConfigureAwait(false);
-                await component.ModifyOriginalResponseAsync(properties => properties.Content = delivered
-                    ? DiscordText.T("Zugang erstellt und Benutzer benachrichtigt.", "Access created and user notified.")
-                    : DiscordText.T($"Zugang erstellt, aber die DM konnte nicht zugestellt werden. Gib dem Benutzer diesen einmaligen Link sicher weiter:\n{url}", $"Access created, but the DM could not be delivered. Securely pass this one-time link to the user:\n{url}")).ConfigureAwait(false);
+                var approvedDescription = delivered
+                    ? DiscordText.T("Das Jellyfin-Konto wurde erstellt, mit Discord verbunden und der Benutzer wurde sicher benachrichtigt.", "The Jellyfin account was created, linked to Discord, and the user was notified securely.")
+                    : DiscordText.T($"Das Konto wurde erstellt, aber die DM konnte nicht zugestellt werden. Gib dem Benutzer diesen einmaligen Link sicher weiter:\n{url}", $"The account was created, but the DM could not be delivered. Securely pass this one-time link to the user:\n{url}");
+                var approvedEmbed = JellixEmbeds.Create(
+                        "✅ " + DiscordText.T("Zugang freigegeben", "Access approved"),
+                        approvedDescription,
+                        JellixEmbeds.Success,
+                        DiscordText.T($"Anfrage #{id} • {createdUser.Username}", $"Request #{id} • {createdUser.Username}"))
+                    .Build();
+                await component.ModifyOriginalResponseAsync(properties =>
+                {
+                    properties.Content = null;
+                    properties.Embed = approvedEmbed;
+                    properties.Components = new ComponentBuilder().Build();
+                }).ConfigureAwait(false);
             }
             catch
             {
@@ -1139,6 +1265,70 @@ public sealed class DiscordBotService : BackgroundService
 
                 throw;
             }
+        }
+        finally
+        {
+            _accessDecisionLock.Release();
+        }
+    }
+
+    private async Task OnModalSubmittedAsync(SocketModal modal)
+    {
+        if (!AllowInteraction(modal, "modal", 30)) return;
+        if (!modal.Data.CustomId.StartsWith("access-reject:", StringComparison.Ordinal)
+            || !long.TryParse(modal.Data.CustomId[14..], NumberStyles.None, CultureInfo.InvariantCulture, out var id))
+        {
+            await modal.RespondAsync(DiscordText.T("Dieses Formular ist nicht mehr gültig.", "This form is no longer valid."), ephemeral: modal.GuildId.HasValue).ConfigureAwait(false);
+            return;
+        }
+
+        var rejected = false;
+        await _accessDecisionLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            var request = await _database.GetAccessRequestAsync(id, CancellationToken.None).ConfigureAwait(false);
+            if (request is null || !IsAccessReviewer(modal.User, request.GuildId))
+            {
+                await modal.RespondAsync(DiscordText.T("Du darfst diese Anfrage nicht bearbeiten.", "You may not process this request."), ephemeral: modal.GuildId.HasValue).ConfigureAwait(false);
+                return;
+            }
+            if (request.Status != "pending")
+            {
+                await modal.RespondAsync(DiscordText.T("Diese Anfrage wurde bereits bearbeitet.", "This request was already processed."), ephemeral: modal.GuildId.HasValue).ConfigureAwait(false);
+                return;
+            }
+
+            var reason = modal.Data.Components.FirstOrDefault(value => value.CustomId == "reason")?.Value?.Trim() ?? string.Empty;
+            reason = Limit(reason, 500);
+            if (!await _database.DecideAccessRequestAsync(id, "rejected", modal.User.Id.ToString(CultureInfo.InvariantCulture), reason, CancellationToken.None).ConfigureAwait(false))
+            {
+                await modal.RespondAsync(DiscordText.T("Diese Anfrage wurde bereits bearbeitet.", "This request was already processed."), ephemeral: modal.GuildId.HasValue).ConfigureAwait(false);
+                return;
+            }
+            rejected = true;
+
+            await TryWriteAuditAsync("discord-admin", modal.User.Id.ToString(CultureInfo.InvariantCulture), "access-rejected", "access-request", id.ToString(CultureInfo.InvariantCulture), string.Empty).ConfigureAwait(false);
+            var rejectedText = DiscordText.T("Deine Jellyfin-Zugangsanfrage wurde abgelehnt.", "Your Jellyfin access request was rejected.");
+            if (!string.IsNullOrWhiteSpace(reason)) rejectedText += DiscordText.T("\nGrund: ", "\nReason: ") + reason;
+            if (ulong.TryParse(request.DiscordUserId, NumberStyles.None, CultureInfo.InvariantCulture, out var rejectedUserId))
+            {
+                _ = await TrySendDmAsync(rejectedUserId, rejectedText).ConfigureAwait(false);
+            }
+
+            var decisionEmbed = JellixEmbeds.Create(
+                    "❌ " + DiscordText.T("Zugangsanfrage abgelehnt", "Access request rejected"),
+                    string.IsNullOrWhiteSpace(reason) ? DiscordText.T("Es wurde kein Grund angegeben.", "No reason was provided.") : DiscordText.T("Grund: ", "Reason: ") + Escape(reason),
+                    JellixEmbeds.Danger,
+                    DiscordText.T($"Anfrage #{id} • bearbeitet von {modal.User.Username}", $"Request #{id} • processed by {modal.User.Username}"))
+                .Build();
+            await modal.UpdateAsync(properties => { properties.Content = null; properties.Embed = decisionEmbed; properties.Components = new ComponentBuilder().Build(); }).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            LogDiscordWarning(_logger, "access rejection failed", exception);
+            await RespondErrorAsync(modal, rejected
+                ? DiscordText.T("Die Ablehnung wurde gespeichert, aber die Bestätigung konnte nicht vollständig zugestellt werden.", "The rejection was saved, but its confirmation could not be delivered completely.")
+                : DiscordText.T("Die Ablehnung konnte nicht gespeichert werden.", "The rejection could not be saved.")).ConfigureAwait(false);
         }
         finally
         {
@@ -1410,9 +1600,11 @@ public sealed class DiscordBotService : BackgroundService
             if (root.ValueKind != JsonValueKind.Object) throw new PermanentNotificationException("Invalid notification payload.");
             var titleText = root.TryGetProperty("title", out var title) && title.ValueKind == JsonValueKind.String ? title.GetString() : "Jellix";
             var descriptionText = root.TryGetProperty("description", out var description) && description.ValueKind == JsonValueKind.String ? description.GetString() : string.Empty;
-            var builder = new EmbedBuilder()
-                .WithTitle(Limit(titleText ?? "Jellix", 256))
-                .WithDescription(Limit(descriptionText ?? string.Empty, 4096));
+            var builder = JellixEmbeds.Create(
+                Limit(titleText ?? "Jellix", 256),
+                Limit(descriptionText ?? string.Empty, 4096),
+                JellixEmbeds.Primary,
+                NotificationFooter(job.Kind));
             if (root.TryGetProperty("color", out var color) && color.TryGetUInt32(out var rawColor) && rawColor <= 0xFFFFFF) builder.WithColor(new Color(rawColor));
             var destination = job.Destination.Split(':', 2);
             if (destination.Length != 2 || destination[0] is not ("dm" or "channel") || !ulong.TryParse(destination[1], out var id)) throw new PermanentNotificationException("Invalid notification destination.");
@@ -1513,6 +1705,12 @@ public sealed class DiscordBotService : BackgroundService
             || (ulong.TryParse(configured, out var id) && guildUser.Roles.Any(role => role.Id == id));
     }
 
+    private bool IsAccessReviewer(SocketUser user, string guildIdValue)
+    {
+        if (!ulong.TryParse(guildIdValue, out var guildId) || _client.GetGuild(guildId) is not { } guild) return false;
+        return guild.OwnerId == user.Id;
+    }
+
     private bool AllowInteraction(IDiscordInteraction interaction, string operation, int limit)
     {
         var key = (interaction.GuildId?.ToString(CultureInfo.InvariantCulture) ?? "dm") + ":" + interaction.User.Id.ToString(CultureInfo.InvariantCulture);
@@ -1555,6 +1753,22 @@ public sealed class DiscordBotService : BackgroundService
         catch (Exception exception) when (exception is HttpException or InvalidOperationException)
         {
             LogDiscordWarning(_logger, "direct message could not be delivered", exception);
+            return false;
+        }
+    }
+
+    private async Task<bool> TrySendDmAsync(ulong userId, Embed embed, MessageComponent components)
+    {
+        try
+        {
+            IUser user = _client.GetUser(userId) ?? (IUser)await _client.Rest.GetUserAsync(userId).ConfigureAwait(false);
+            var channel = await user.CreateDMChannelAsync().ConfigureAwait(false);
+            await channel.SendMessageAsync(embed: embed, components: components, allowedMentions: AllowedMentions.None).ConfigureAwait(false);
+            return true;
+        }
+        catch (Exception exception) when (exception is HttpException or InvalidOperationException)
+        {
+            LogDiscordWarning(_logger, "direct message embed could not be delivered", exception);
             return false;
         }
     }
@@ -1655,6 +1869,43 @@ public sealed class DiscordBotService : BackgroundService
         };
         return $"{icon} **{Escape(Limit(title, 160))}**\n{Escape(Limit(label, 100))}{progress}";
     }
+
+    private static Embed BuildRequestsEmbed(string[] lines)
+        => JellixEmbeds.Create(
+                "📋 " + DiscordText.T("Deine MediaForge-Anfragen", "Your MediaForge requests"),
+                lines.Length == 0 ? DiscordText.T("Noch keine Anfragen vorhanden.", "No requests found yet.") : JoinWithinLimit(lines, "\n\n", 4096),
+                JellixEmbeds.Secondary,
+                DiscordText.T("Status direkt aus MediaForge", "Status directly from MediaForge"))
+            .Build();
+
+    private static string PeriodLabel(string period)
+        => period switch
+        {
+            "today" => DiscordText.T("Heute", "Today"),
+            "week" => DiscordText.T("Diese Woche", "This week"),
+            "month" => DiscordText.T("Dieser Monat", "This month"),
+            "year" => DiscordText.T("Dieses Jahr", "This year"),
+            _ => DiscordText.T("Gesamt", "All time"),
+        };
+
+    private static string LeaderboardCategoryLabel(string category)
+        => category switch
+        {
+            "movies" => DiscordText.T("Filme", "Movies"),
+            "series" => DiscordText.T("Serien", "Series"),
+            "episodes" => DiscordText.T("Episoden", "Episodes"),
+            _ => "Watchtime",
+        };
+
+    private static string NotificationFooter(string kind)
+        => kind switch
+        {
+            "achievement" => DiscordText.T("Jellix Achievement", "Jellix achievement"),
+            "library" => DiscordText.T("Neu in deiner Jellyfin-Bibliothek", "New in your Jellyfin library"),
+            "mediaforge-request" => "Jellix • MediaForge",
+            "admin-alert" => DiscordText.T("Jellix Systemwarnung", "Jellix system alert"),
+            _ => DiscordText.T("Jellix für Jellyfin", "Jellix for Jellyfin"),
+        };
 
     private static string AchievementName(string id)
         => id switch

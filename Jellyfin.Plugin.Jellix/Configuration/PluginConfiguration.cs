@@ -89,6 +89,8 @@ public sealed class PluginConfiguration : BasePluginConfiguration
 
     public bool AdminAlertsEnabled { get; set; }
 
+    public string AdminAlertMode { get; set; } = "owner-dm";
+
     public string AdminAlertChannelId { get; set; } = string.Empty;
 
     public int HealthCheckMinutes { get; set; } = 5;

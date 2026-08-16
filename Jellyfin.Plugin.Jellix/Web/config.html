@@ -57,7 +57,7 @@
 
         <h3>Onboarding und Stickies</h3>
         <div class="checkboxContainer"><label><input is="emby-checkbox" id="AccessRequestsEnabled" type="checkbox"><span>Zugangsanfragen erlauben</span></label></div>
-        <div class="inputContainer"><label class="inputLabel" for="AccessRequestChannelId">Zugangsanfragen-Kanal-ID</label><input is="emby-input" id="AccessRequestChannelId" inputmode="numeric"></div>
+        <div class="inputContainer"><label class="inputLabel" for="AccessRequestChannelId">Fallback-Kanal-ID für Zugangsanfragen</label><input is="emby-input" id="AccessRequestChannelId" inputmode="numeric"><div class="fieldDescription">Die Anfrage geht zuerst per Direktnachricht an den Discord-Server-Owner. Dieser Kanal wird nur verwendet, wenn die DM nicht zugestellt werden kann.</div></div>
         <div class="inputContainer"><label class="inputLabel" for="AccessRequestCooldownHours">Erneute Anfrage nach Ablehnung (Stunden)</label><input is="emby-input" id="AccessRequestCooldownHours" type="number" min="1" max="8760"></div>
         <div class="checkboxContainer"><label><input is="emby-checkbox" id="AssignStreamingRoleAfterApproval" type="checkbox"><span>Nach Freigabe Streaming-Rolle vergeben</span></label></div>
         <div class="checkboxContainer"><label><input is="emby-checkbox" id="StickyEnabled" type="checkbox"><span>Sticky-Nachrichten aktivieren</span></label></div>
@@ -65,6 +65,7 @@
 
         <h3>Warnungen</h3>
         <div class="checkboxContainer"><label><input is="emby-checkbox" id="AdminAlertsEnabled" type="checkbox"><span>Admin-Warnungen aktivieren</span></label></div>
+        <div class="selectContainer"><label class="selectLabel" for="AdminAlertMode">Admin-Warnungen senden an</label><select is="emby-select" id="AdminAlertMode"><option value="owner-dm">Discord-Server-Owner per Direktnachricht</option><option value="channel">Konfigurierten Kanal</option></select></div>
         <div class="inputContainer"><label class="inputLabel" for="AdminAlertChannelId">Warnungs-Kanal-ID</label><input is="emby-input" id="AdminAlertChannelId" inputmode="numeric"></div>
         <div class="inputContainer"><label class="inputLabel" for="HealthCheckMinutes">Prüfintervall (Minuten)</label><input is="emby-input" id="HealthCheckMinutes" type="number" min="1" max="1440"></div>
         <div class="checkboxContainer"><label><input is="emby-checkbox" id="CheckJellyfinUpdates" type="checkbox"><span>Auf Jellyfin-Updates prüfen</span></label></div>

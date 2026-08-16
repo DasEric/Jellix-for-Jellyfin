@@ -1,6 +1,6 @@
-using System.Globalization;
 using System.Text.Json;
 using Jellyfin.Plugin.Jellix.Data;
+using Jellyfin.Plugin.Jellix.Discord;
 using Jellyfin.Plugin.Jellix.Integrations;
 using Jellyfin.Plugin.Jellix.Models;
 using MediaBrowser.Controller.Library;
@@ -19,17 +19,20 @@ public sealed class MediaForgeMonitoringService : BackgroundService
     private readonly MediaForgeBridgeClient _bridge;
     private readonly JellixDatabase _database;
     private readonly IUserManager _userManager;
+    private readonly DiscordBotService _discord;
     private readonly ILogger<MediaForgeMonitoringService> _logger;
 
     public MediaForgeMonitoringService(
         MediaForgeBridgeClient bridge,
         JellixDatabase database,
         IUserManager userManager,
+        DiscordBotService discord,
         ILogger<MediaForgeMonitoringService> logger)
     {
         _bridge = bridge;
         _database = database;
         _userManager = userManager;
+        _discord = discord;
         _logger = logger;
     }
 
@@ -200,7 +203,7 @@ public sealed class MediaForgeMonitoringService : BackgroundService
     private async Task UpdateIncidentAsync(string key, bool active, string german, string english, CancellationToken cancellationToken)
     {
         var config = Plugin.Instance?.Configuration;
-        if (config?.AdminAlertsEnabled != true || !ulong.TryParse(config.AdminAlertChannelId, NumberStyles.None, CultureInfo.InvariantCulture, out _))
+        if (config?.AdminAlertsEnabled != true || _discord.ResolveOwnerDestination() is null)
         {
             return;
         }
@@ -217,9 +220,10 @@ public sealed class MediaForgeMonitoringService : BackgroundService
     private async Task QueueAdminAlertAsync(string german, string english, string dedupe, CancellationToken cancellationToken, uint color = 0xE74C3C)
     {
         var config = Plugin.Instance?.Configuration;
-        if (config?.AdminAlertsEnabled != true || !ulong.TryParse(config.AdminAlertChannelId, NumberStyles.None, CultureInfo.InvariantCulture, out var channelId)) return;
+        var destination = _discord.ResolveOwnerDestination();
+        if (config?.AdminAlertsEnabled != true || destination is null) return;
         var payload = JsonSerializer.Serialize(new { title = "Jellix", description = config.Language == "en" ? english : german, color });
-        await _database.EnqueueNotificationAsync(NotificationPriority.High, "admin-alert", $"channel:{channelId}", payload, dedupe, DateTime.UtcNow, cancellationToken).ConfigureAwait(false);
+        await _database.EnqueueNotificationAsync(NotificationPriority.High, "admin-alert", destination, payload, dedupe, DateTime.UtcNow, cancellationToken).ConfigureAwait(false);
     }
 
     private static string ReadString(JsonElement item, string property)
