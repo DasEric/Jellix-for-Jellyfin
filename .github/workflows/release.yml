@@ -1,0 +1,102 @@
+name: Build, release and publish Jellyfin repository
+
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: jellix-release
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: 9.0.317
+      - name: Validate release metadata
+        shell: pwsh
+        run: ./scripts/validate-release.ps1 -Tag $env:GITHUB_REF_NAME
+      - name: Restore locked dependencies
+        run: dotnet restore Jellix-for-Jellyfin.slnx --locked-mode
+      - name: Audit dependencies
+        run: dotnet list Jellix-for-Jellyfin.slnx package --vulnerable --include-transitive
+      - name: Build with warnings as errors
+        run: dotnet build Jellix-for-Jellyfin.slnx --configuration Release --no-restore -warnaserror
+      - name: Run tests
+        run: dotnet run --project Tests/Jellix.Tests/Jellix.Tests.csproj --configuration Release --no-build --no-restore
+      - name: Check browser scripts
+        run: |
+          node --check Jellyfin.Plugin.Jellix/Web/config.js
+          node --check Jellyfin.Plugin.Jellix/Web/injection.js
+          node --check Jellyfin.Plugin.Jellix/Web/link.js
+          node --check Jellyfin.Plugin.Jellix/Web/password.js
+          node --check Jellyfin.Plugin.Jellix/Web/password-standalone.js
+      - name: Build release archive
+        shell: pwsh
+        run: ./scripts/build.ps1 -NoRestore
+      - name: Generate Jellyfin repository manifest
+        shell: pwsh
+        run: ./scripts/generate-manifest.ps1 -RepositorySlug $env:GITHUB_REPOSITORY -ReleaseTag $env:GITHUB_REF_NAME
+      - name: Upload release bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-bundle
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            dist/Jellix_*.zip
+            dist/JellixWatchdog_*.zip
+            dist/SHA256SUMS.txt
+      - name: Upload Jellyfin repository site
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: repository
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified release bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-bundle
+          path: dist
+      - name: Verify SHA-256 checksums
+        working-directory: dist
+        run: sha256sum --check SHA256SUMS.txt
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release create "$GITHUB_REF_NAME" dist/Jellix_*.zip dist/JellixWatchdog_*.zip dist/SHA256SUMS.txt --verify-tag --title "Jellix $GITHUB_REF_NAME" --generate-notes
+
+  deploy-repository:
+    needs: [build, release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - name: Publish manifest.json
+        id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0

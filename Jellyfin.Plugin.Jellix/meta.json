@@ -1,0 +1,15 @@
+{
+  "category": "General",
+  "changelog": "Initial Jellix release.",
+  "description": "Discord account tools, playback statistics, notifications and optional MediaForge requests for Jellyfin.",
+  "guid": "bea64f51-00f3-4535-8fd3-88bcd2785f24",
+  "name": "Jellix",
+  "overview": "Discord companion for Jellyfin",
+  "owner": "Eric (DasEric)",
+  "targetAbi": "10.11.0.0",
+  "timestamp": "2026-08-16T00:00:00Z",
+  "version": "0.1.0.0",
+  "status": "Active",
+  "autoUpdate": true
+}
+

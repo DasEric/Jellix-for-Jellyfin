@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="Jellyfin.Plugin.Jellix/Jellyfin.Plugin.Jellix.csproj" />
+  <Project Path="Tests/Jellix.Tests/Jellix.Tests.csproj" />
+</Solution>
+

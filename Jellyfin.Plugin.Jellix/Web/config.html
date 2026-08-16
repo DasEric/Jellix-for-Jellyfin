@@ -1,0 +1,89 @@
+<div id="JellixConfigPage" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input,emby-button,emby-select,emby-checkbox">
+  <div data-role="content">
+    <div class="content-primary">
+      <h2>Jellix</h2>
+      <p>Discord-Bot für Konten, Statistiken und optionale MediaForge-Anfragen.</p>
+      <div id="jellixStatus" class="paperList" style="padding:1em;margin:1em 0"></div>
+
+      <form id="jellixConfigForm">
+        <h3>Discord</h3>
+        <div class="checkboxContainer"><label><input is="emby-checkbox" id="BotEnabled" type="checkbox"><span>Bot aktivieren</span></label></div>
+        <div class="inputContainer"><label class="inputLabel" for="DiscordToken">Bot-Token</label><input is="emby-input" id="DiscordToken" type="password" autocomplete="new-password"><div class="fieldDescription">Leer lassen, um das gespeicherte Token beizubehalten.</div></div>
+        <button is="emby-button" type="button" id="DeleteDiscordToken"><span>Gespeichertes Token löschen</span></button>
+        <div class="inputContainer"><label class="inputLabel" for="GuildId">Discord-Server-ID</label><input is="emby-input" id="GuildId" inputmode="numeric" required></div>
+        <div class="selectContainer"><label class="selectLabel" for="Language">Sprache für Befehle und Nachrichten</label><select is="emby-select" id="Language"><option value="de">Deutsch</option><option value="en">English</option></select></div>
+        <div class="inputContainer"><label class="inputLabel" for="StreamingRoleId">Streaming-Rollen-ID</label><input is="emby-input" id="StreamingRoleId" inputmode="numeric"><div class="fieldDescription">Leer = jeder darf allgemeine Benutzerbefehle verwenden.</div></div>
+        <div class="inputContainer"><label class="inputLabel" for="RequestRoleId">Anfragen-Rollen-ID</label><input is="emby-input" id="RequestRoleId" inputmode="numeric"><div class="fieldDescription">Leer = keine zusätzliche Rolle; eine Kontoverknüpfung bleibt Pflicht.</div></div>
+        <div class="inputContainer"><label class="inputLabel" for="AdminRoleId">Admin-Rollen-ID</label><input is="emby-input" id="AdminRoleId" inputmode="numeric"></div>
+        <div class="inputContainer"><label class="inputLabel" for="JellyfinPublicUrl">Öffentliche Jellyfin-URL</label><input is="emby-input" id="JellyfinPublicUrl" type="url" placeholder="https://jellyfin.example.de"><div class="fieldDescription">Für einmalige Passwort-Links; HTTPS ist außerhalb des lokalen Rechners Pflicht.</div></div>
+
+        <h3>Konten und Datenschutz</h3>
+        <div class="checkboxContainer"><label><input is="emby-checkbox" id="SelfLinkEnabled" type="checkbox"><span>Self-Linking erlauben</span></label></div>
+        <div class="inputContainer"><label class="inputLabel" for="LinkCodeLifetimeMinutes">Link-Code gültig (Minuten)</label><input is="emby-input" id="LinkCodeLifetimeMinutes" type="number" min="1" max="30"></div>
+        <div class="checkboxContainer"><label><input is="emby-checkbox" id="PasswordChangeEnabled" type="checkbox"><span>Passwortänderung erlauben</span></label></div>
+        <div class="inputContainer"><label class="inputLabel" for="PasswordTicketLifetimeMinutes">Passwort-Link gültig (Minuten)</label><input is="emby-input" id="PasswordTicketLifetimeMinutes" type="number" min="1" max="30"></div>
+        <div class="checkboxContainer"><label><input is="emby-checkbox" id="RevokeSessionsAfterPasswordChange" type="checkbox"><span>Nach Passwortänderung bestehende Sitzungen abmelden</span></label></div>
+        <div class="checkboxContainer"><label><input is="emby-checkbox" id="UnlockAccountEnabled" type="checkbox"><span>Eigenes Konto entsperren erlauben</span></label></div>
+        <div class="checkboxContainer"><label><input is="emby-checkbox" id="UserPageEnabled" type="checkbox"><span>„Discord verbinden“ in Jellyfin anzeigen</span></label></div>
+
+        <h3>Statistiken und Achievements</h3>
+        <div class="checkboxContainer"><label><input is="emby-checkbox" id="StatisticsEnabled" type="checkbox"><span>Statistiken erfassen und anzeigen</span></label></div>
+        <div class="inputContainer"><label class="inputLabel" for="CompletedPlaybackPercent">Als angesehen ab (Prozent)</label><input is="emby-input" id="CompletedPlaybackPercent" type="number" min="50" max="100"></div>
+        <div class="checkboxContainer"><label><input is="emby-checkbox" id="LeaderboardEnabled" type="checkbox"><span>Leaderboard aktivieren</span></label></div>
+        <div class="checkboxContainer"><label><input is="emby-checkbox" id="AchievementsEnabled" type="checkbox"><span>Achievements aktivieren</span></label></div>
+        <div class="checkboxContainer"><label><input is="emby-checkbox" id="AchievementFilmFanEnabled" type="checkbox"><span>Filmfan</span></label></div>
+        <div class="checkboxContainer"><label><input is="emby-checkbox" id="AchievementCineasteEnabled" type="checkbox"><span>Cineast</span></label></div>
+        <div class="checkboxContainer"><label><input is="emby-checkbox" id="AchievementSeriesJunkieEnabled" type="checkbox"><span>Serienjunkie</span></label></div>
+        <div class="checkboxContainer"><label><input is="emby-checkbox" id="AchievementNightOwlEnabled" type="checkbox"><span>Nachteule</span></label></div>
+        <div class="checkboxContainer"><label><input is="emby-checkbox" id="AchievementBingeWatcherEnabled" type="checkbox"><span>Binge Watcher</span></label></div>
+        <div class="checkboxContainer"><label><input is="emby-checkbox" id="AchievementNoLifeEnabled" type="checkbox"><span>No Life</span></label></div>
+        <div class="selectContainer"><label class="selectLabel" for="AchievementNotificationMode">Achievement-Meldungen</label><select is="emby-select" id="AchievementNotificationMode"><option value="off">Aus</option><option value="dm">Direktnachricht</option><option value="channel">Kanal</option></select></div>
+        <div class="inputContainer"><label class="inputLabel" for="AchievementChannelId">Achievement-Kanal-ID</label><input is="emby-input" id="AchievementChannelId" inputmode="numeric"></div>
+        <div class="inputContainer"><label class="inputLabel" for="TimeZoneId">Zeitzone</label><input is="emby-input" id="TimeZoneId" placeholder="Europe/Berlin"><div class="fieldDescription">Leer = Zeitzone des Jellyfin-Servers.</div></div>
+
+        <h3>MediaForge</h3>
+        <div class="checkboxContainer"><label><input is="emby-checkbox" id="MediaForgeEnabled" type="checkbox"><span>MediaForge-Integration aktivieren</span></label></div>
+        <div class="inputContainer"><label class="inputLabel" for="MediaForgePollSeconds">Statusintervall (Sekunden)</label><input is="emby-input" id="MediaForgePollSeconds" type="number" min="15" max="3600"></div>
+        <div class="selectContainer"><label class="selectLabel" for="RequestNotificationMode">Anfrage-Benachrichtigungen</label><select is="emby-select" id="RequestNotificationMode"><option value="off">Aus</option><option value="dm">Direktnachricht</option><option value="channel">Kanal</option></select></div>
+        <div class="inputContainer"><label class="inputLabel" for="RequestNotificationChannelId">Anfragen-Kanal-ID</label><input is="emby-input" id="RequestNotificationChannelId" inputmode="numeric"></div>
+
+        <h3>Bibliothek und Anzeige</h3>
+        <div class="checkboxContainer"><label><input is="emby-checkbox" id="NewMediaNotificationsEnabled" type="checkbox"><span>Neue Filme und Serien posten</span></label></div>
+        <div class="checkboxContainer"><label><input is="emby-checkbox" id="NewEpisodeNotificationsEnabled" type="checkbox"><span>Neue Episoden posten</span></label></div>
+        <div class="inputContainer"><label class="inputLabel" for="NewMediaChannelId">Neuigkeiten-Kanal-ID</label><input is="emby-input" id="NewMediaChannelId" inputmode="numeric"></div>
+        <div class="selectContainer"><label class="selectLabel" for="NowPlayingMode">„Was läuft gerade?“</label><select is="emby-select" id="NowPlayingMode"><option value="off">Aus</option><option value="admin">Nur Admins</option><option value="public">Öffentlich</option></select></div>
+        <div class="checkboxContainer"><label><input is="emby-checkbox" id="NowPlayingShowUsernames" type="checkbox"><span>Benutzernamen anzeigen</span></label></div>
+        <div class="checkboxContainer"><label><input is="emby-checkbox" id="RandomEnabled" type="checkbox"><span>Zufallsempfehlungen aktivieren</span></label></div>
+
+        <h3>Onboarding und Stickies</h3>
+        <div class="checkboxContainer"><label><input is="emby-checkbox" id="AccessRequestsEnabled" type="checkbox"><span>Zugangsanfragen erlauben</span></label></div>
+        <div class="inputContainer"><label class="inputLabel" for="AccessRequestChannelId">Zugangsanfragen-Kanal-ID</label><input is="emby-input" id="AccessRequestChannelId" inputmode="numeric"></div>
+        <div class="inputContainer"><label class="inputLabel" for="AccessRequestCooldownHours">Erneute Anfrage nach Ablehnung (Stunden)</label><input is="emby-input" id="AccessRequestCooldownHours" type="number" min="1" max="8760"></div>
+        <div class="checkboxContainer"><label><input is="emby-checkbox" id="AssignStreamingRoleAfterApproval" type="checkbox"><span>Nach Freigabe Streaming-Rolle vergeben</span></label></div>
+        <div class="checkboxContainer"><label><input is="emby-checkbox" id="StickyEnabled" type="checkbox"><span>Sticky-Nachrichten aktivieren</span></label></div>
+        <div class="inputContainer"><label class="inputLabel" for="StickyDebounceSeconds">Sticky-Verzögerung (Sekunden)</label><input is="emby-input" id="StickyDebounceSeconds" type="number" min="1" max="10"></div>
+
+        <h3>Warnungen</h3>
+        <div class="checkboxContainer"><label><input is="emby-checkbox" id="AdminAlertsEnabled" type="checkbox"><span>Admin-Warnungen aktivieren</span></label></div>
+        <div class="inputContainer"><label class="inputLabel" for="AdminAlertChannelId">Warnungs-Kanal-ID</label><input is="emby-input" id="AdminAlertChannelId" inputmode="numeric"></div>
+        <div class="inputContainer"><label class="inputLabel" for="HealthCheckMinutes">Prüfintervall (Minuten)</label><input is="emby-input" id="HealthCheckMinutes" type="number" min="1" max="1440"></div>
+        <div class="checkboxContainer"><label><input is="emby-checkbox" id="CheckJellyfinUpdates" type="checkbox"><span>Auf Jellyfin-Updates prüfen</span></label></div>
+        <div class="inputContainer"><label class="inputLabel" for="AuditRetentionDays">Audit-Aufbewahrung (Tage)</label><input is="emby-input" id="AuditRetentionDays" type="number" min="1" max="3650"></div>
+
+        <button is="emby-button" type="submit" class="raised button-submit block"><span>Speichern</span></button>
+      </form>
+
+      <h3>Konten zuweisen</h3>
+      <form id="jellixLinkForm">
+        <div class="selectContainer"><label class="selectLabel" for="LinkJellyfinUser">Jellyfin-Benutzer</label><select is="emby-select" id="LinkJellyfinUser"></select></div>
+        <div class="inputContainer"><label class="inputLabel" for="LinkDiscordUser">Discord-Benutzer-ID</label><input is="emby-input" id="LinkDiscordUser" inputmode="numeric" required></div>
+        <button is="emby-button" type="submit" class="raised"><span>Zuweisen</span></button>
+      </form>
+      <div id="jellixLinks"></div>
+
+      <h3>Audit Log</h3>
+      <div id="jellixAudit"></div>
+    </div>
+  </div>
+  <script src="configurationpage?name=JellixConfigJS"></script>
+</div>
