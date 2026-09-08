@@ -6,16 +6,16 @@ For every Discord command, option, permission, visibility rule, and the complete
 
 ## Requirements
 
-- Jellyfin 10.11 or newer
+- Jellyfin 12.0 or newer (use a 0.2.x release for Jellyfin 10.11)
 - A Discord application with a bot
 - HTTPS access to Jellyfin if password-change links are enabled outside the local machine
-- MediaForge Requests 0.4.0 or newer for the optional request integration
+- MediaForge Requests 0.5.0 or newer for the optional request integration
 
 ## Dependencies
 
 Normal Jellyfin users do not need to install Python, `discord.py`, Node.js, npm packages, or a separate Discord service. Jellix is a .NET Jellyfin plugin and uses Discord.Net, not `discord.py`. All required Discord.Net runtime libraries are included in the Jellix release archive. Jellyfin supplies the server APIs and native SQLite provider used by the plugin.
 
-Building Jellix from source requires the .NET 9 SDK. PowerShell 7 is used by the release scripts, and Node.js is used only for JavaScript syntax validation in the automated workflow; neither PowerShell nor Node.js is a runtime dependency of the installed plugin.
+Building Jellix from source requires the .NET 10 SDK. PowerShell 7 is used by the release scripts, and Node.js is used only for JavaScript syntax validation in the automated workflow; neither PowerShell nor Node.js is a runtime dependency of the installed plugin.
 
 ## Features
 
@@ -90,17 +90,18 @@ The `/account` command opens a private dashboard with buttons for password chang
 - Search for movies and series through Discord.
 - Submit opaque, short-lived, user-bound selection tokens.
 - Display personal request status and download progress.
-- Notify users when requests become available, fail, or are rejected.
+- Notify the requesting Discord user by direct message when a request becomes available, fails, or is rejected; personal results are never redirected to a public channel.
 - Detect MediaForge availability and invalid API-key states.
 - Keep MediaForge's `RequestStore` as the only source of truth. Jellix never reads or modifies `requests.json` and does not maintain a second request database.
 - Isolate MediaForge initialization, timeout, response, and compatibility failures from Jellyfin and the Discord bot.
 
-The integration requires the protocol-v1 Jellix bridge included with MediaForge Requests 0.4.0 or newer. Install or update both plugins and restart Jellyfin before enabling it.
+The integration requires the protocol-v1 Jellix bridge included with MediaForge Requests 0.5.0 or newer. Install or update both plugins and restart Jellyfin before enabling it.
 
 ### Library notifications
 
-- Announce newly added movies and series in a configured Discord channel.
-- Announce new episodes separately.
+- Announce newly added movies, series, and seasons in a configured Discord channel.
+- Collapse library scans hierarchically: a new series suppresses its season and episode messages, while a new season suppresses its episode messages.
+- Announce a single newly added episode separately when neither its series nor season is new.
 - Include available title, year, rating, runtime, overview, and poster metadata.
 - Create a persistent initial baseline so existing content is not announced as new.
 - Resume pending announcements safely after a restart.
@@ -111,7 +112,7 @@ The integration requires the protocol-v1 Jellix bridge included with MediaForge 
 - Support one sticky message per channel.
 - Remove, inspect, or refresh a sticky through `/sticky`.
 - Repost after channel activity using a configurable debounce delay.
-- Persist sticky content and state across Jellyfin and bot restarts.
+- Persist sticky content and state across Jellyfin and bot restarts, and restore it to the newest channel position after reconnecting.
 - Prevent deletion-event loops and unnecessary Discord requests.
 
 ### Administration and monitoring

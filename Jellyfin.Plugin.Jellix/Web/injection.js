@@ -1,6 +1,7 @@
 (function () {
   'use strict';
   const entryId = 'jellix-link-sidebar';
+  const modernEntryId = 'jellix-link-modern-sidebar';
   const modalId = 'jellix-link-modal';
   let language = 'de';
   let enabled = false;
@@ -12,37 +13,49 @@
 
   function inject() {
     const existing = document.getElementById(entryId);
-    if (!enabled) { if (existing) existing.remove(); return; }
+    const modernExisting = document.getElementById(modernEntryId);
+    if (!enabled) { if (existing) existing.remove(); if (modernExisting) modernExisting.remove(); return; }
     if (existing) {
       const label = existing.querySelector('.navMenuOptionText');
       if (label) {
         const newLabel = linkLabel();
         if (label.textContent !== newLabel) label.textContent = newLabel;
       }
-      return;
     }
     if (!client()) return;
     const sidebar = document.querySelector('.mainDrawer-scrollContainer, .mainDrawer .scrollContainer');
-    if (!sidebar) return;
-    const entry = document.createElement('a');
-    entry.id = entryId;
-    entry.href = '#';
-    entry.setAttribute('is', 'emby-linkbutton');
-    entry.className = 'navMenuOption lnkMediaFolder';
-    entry.innerHTML = '<span class="material-icons navMenuOptionIcon link" aria-hidden="true"></span>';
-    const label = document.createElement('span');
-    label.className = 'navMenuOptionText';
-    label.textContent = linkLabel();
-    entry.appendChild(label);
+    if (sidebar && !existing) {
+      const entry = createEntry(entryId, 'navMenuOption lnkMediaFolder', '<span class="material-icons navMenuOptionIcon link" aria-hidden="true"></span>');
+      entry.setAttribute('is', 'emby-linkbutton');
+      const label = document.createElement('span'); label.className = 'navMenuOptionText'; label.textContent = linkLabel(); entry.appendChild(label);
+      const custom = sidebar.querySelector('.customMenuOptions');
+      const admin = sidebar.querySelector('.adminMenuOptions');
+      if (custom) custom.appendChild(entry); else if (admin) sidebar.insertBefore(entry, admin); else sidebar.appendChild(entry);
+    }
+    if (modernExisting) {
+      const label = modernExisting.querySelector('[data-jellix-label]');
+      if (label) label.textContent = linkLabel();
+    } else if (typeof document.querySelectorAll === 'function') {
+      const drawer = Array.from(document.querySelectorAll('.MuiDrawer-paper')).find((item) => !(item.closest && item.closest('.mainDrawer')));
+      const list = drawer && drawer.querySelector('ul.MuiList-root');
+      if (list) {
+        const modern = createEntry(modernEntryId, 'MuiButtonBase-root MuiListItemButton-root MuiListItemButton-gutters', '<span class="material-icons" aria-hidden="true" style="min-width:2.5rem">link</span><span data-jellix-label></span>');
+        modern.querySelector('[data-jellix-label]').textContent = linkLabel();
+        modern.style.cssText = 'display:flex;align-items:center;box-sizing:border-box;width:100%;min-height:48px;padding:8px 16px;color:inherit;text-decoration:none;gap:.5rem;';
+        list.appendChild(modern);
+      }
+    }
+  }
+
+  function createEntry(id, className, html) {
+    const entry = document.createElement('a'); entry.id = id; entry.href = '#'; entry.className = className; entry.innerHTML = html;
     entry.addEventListener('click', function (event) {
       event.preventDefault();
       const backdrop = document.querySelector('.mainDrawer-backdrop');
       if (backdrop) backdrop.click();
       openModal();
     });
-    const custom = sidebar.querySelector('.customMenuOptions');
-    const admin = sidebar.querySelector('.adminMenuOptions');
-    if (custom) custom.appendChild(entry); else if (admin) sidebar.insertBefore(entry, admin); else sidebar.appendChild(entry);
+    return entry;
   }
 
   function button(label, danger) {

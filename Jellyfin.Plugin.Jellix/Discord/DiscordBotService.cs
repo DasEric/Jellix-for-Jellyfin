@@ -52,6 +52,8 @@ public sealed class DiscordBotService : BackgroundService
     private readonly Dictionary<ulong, CancellationTokenSource> _stickyDebounce = [];
     private readonly ConcurrentDictionary<ulong, byte> _expectedStickyDeletes = new();
     private readonly ConcurrentDictionary<ulong, SemaphoreSlim> _stickyRefreshLocks = new();
+    private readonly ConcurrentDictionary<ulong, byte> _expectedStickyPosts = new();
+    private readonly ConcurrentDictionary<ulong, byte> _stickyPostsInFlight = new();
     private readonly object _stickySync = new();
     private readonly object _cpuSync = new();
     private readonly SemaphoreSlim _accessDecisionLock = new(1, 1);
@@ -356,7 +358,6 @@ public sealed class DiscordBotService : BackgroundService
         var channels = new List<(string Name, string Id, bool Required)>
         {
             ("Achievement-Kanal", config.AchievementChannelId, config.AchievementsEnabled && config.AchievementNotificationMode == "channel"),
-            ("Anfragen-Kanal", config.RequestNotificationChannelId, config.MediaForgeEnabled && config.RequestNotificationMode == "channel"),
             ("Neuigkeiten-Kanal", config.NewMediaChannelId, config.NewMediaNotificationsEnabled || config.NewEpisodeNotificationsEnabled),
             ("Fallback-Kanal für Zugangsanfragen", config.AccessRequestChannelId, false),
             ("Warnungs-Kanal", config.AdminAlertChannelId, config.AdminAlertsEnabled && config.AdminAlertMode == "channel"),
@@ -1445,8 +1446,7 @@ public sealed class DiscordBotService : BackgroundService
 
     private Task OnMessageReceivedAsync(SocketMessage message)
     {
-        if (message.Author.Id == _client.CurrentUser?.Id
-            || message.Channel is not SocketGuildChannel guildChannel
+        if (message.Channel is not SocketGuildChannel guildChannel
             || Plugin.Instance?.Configuration is not { StickyEnabled: true } config
             || !ulong.TryParse(config.GuildId, out var configuredGuildId)
             || guildChannel.Guild.Id != configuredGuildId)
@@ -1454,9 +1454,23 @@ public sealed class DiscordBotService : BackgroundService
             return Task.CompletedTask;
         }
 
+        // Normal Jellix posts must move the sticky as well. Ignore only the
+        // exact message ID returned by our own sticky repost; relying on lock
+        // timing alone is unsafe because Discord gateway delivery can arrive
+        // either before or after the REST response.
+        var knownStickyPost = _expectedStickyPosts.TryRemove(message.Id, out _);
+        var stickyPostInFlight = _stickyPostsInFlight.ContainsKey(message.Channel.Id);
+        if (ShouldIgnoreOwnStickyMessage(message.Author.Id == _client.CurrentUser?.Id, knownStickyPost, stickyPostInFlight))
+        {
+            return Task.CompletedTask;
+        }
+
         ScheduleStickyRefresh(guildChannel.Guild.Id, message.Channel.Id);
         return Task.CompletedTask;
     }
+
+    internal static bool ShouldIgnoreOwnStickyMessage(bool authoredByCurrentBot, bool knownStickyPost, bool stickyPostInFlight)
+        => authoredByCurrentBot && (knownStickyPost || stickyPostInFlight);
 
     private async Task OnMessageDeletedAsync(Cacheable<IMessage, ulong> message, Cacheable<IMessageChannel, ulong> channel)
     {
@@ -1527,7 +1541,18 @@ public sealed class DiscordBotService : BackgroundService
             var latest = await _database.GetStickyAsync(sticky.GuildId, sticky.ChannelId, cancellationToken).ConfigureAwait(false) ?? sticky;
             if (!latest.Enabled) return;
             var payload = JsonSerializer.Deserialize<StickyPayload>(latest.ContentJson) ?? new StickyPayload();
-            var message = await channel.SendMessageAsync(payload.BuildContent(), embeds: payload.BuildEmbeds(), allowedMentions: AllowedMentions.None).ConfigureAwait(false);
+            IUserMessage message;
+            _stickyPostsInFlight[channelId] = 0;
+            try
+            {
+                message = await channel.SendMessageAsync(payload.BuildContent(), embeds: payload.BuildEmbeds(), allowedMentions: AllowedMentions.None).ConfigureAwait(false);
+                _expectedStickyPosts[message.Id] = 0;
+                if (_expectedStickyPosts.Count > 1000) _expectedStickyPosts.Clear();
+            }
+            finally
+            {
+                _stickyPostsInFlight.TryRemove(channelId, out _);
+            }
             try
             {
                 await _database.UpsertStickyAsync(latest with { CurrentMessageId = message.Id.ToString(CultureInfo.InvariantCulture), LastRepostedUtc = DateTime.UtcNow }, cancellationToken).ConfigureAwait(false);
@@ -1573,7 +1598,11 @@ public sealed class DiscordBotService : BackgroundService
             if (!sticky.Enabled || sticky.GuildId != guild || !ulong.TryParse(sticky.ChannelId, out var channelId) || _client.GetChannel(channelId) is not IMessageChannel channel) continue;
             var exists = ulong.TryParse(sticky.CurrentMessageId, out var messageId)
                 && await channel.GetMessageAsync(messageId).ConfigureAwait(false) is not null;
-            if (!exists) await RefreshStickyAsync(sticky, cancellationToken).ConfigureAwait(false);
+            var newest = (await channel.GetMessagesAsync(1).FlattenAsync().ConfigureAwait(false)).FirstOrDefault();
+            if (!exists || newest?.Id != messageId)
+            {
+                await RefreshStickyAsync(sticky, cancellationToken).ConfigureAwait(false);
+            }
         }
     }
 
@@ -1595,6 +1624,12 @@ public sealed class DiscordBotService : BackgroundService
     {
         try
         {
+            if (ShouldSuppressPersonalRequest(job.Kind, Plugin.Instance?.Configuration.RequestNotificationMode, job.Destination))
+            {
+                await _database.CompleteNotificationAsync(job.Id, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
             using var payload = JsonDocument.Parse(job.PayloadJson);
             var root = payload.RootElement;
             if (root.ValueKind != JsonValueKind.Object) throw new PermanentNotificationException("Invalid notification payload.");
@@ -1653,6 +1688,10 @@ public sealed class DiscordBotService : BackgroundService
             LogDiscordWarning(_logger, "notification delivery failed", exception);
         }
     }
+
+    internal static bool ShouldSuppressPersonalRequest(string kind, string? mode, string destination)
+        => kind == "mediaforge-request"
+            && (mode is null or "off" || !destination.StartsWith("dm:", StringComparison.Ordinal));
 
     private async Task<UserLink?> RequireLinkAsync(IDiscordInteraction interaction)
     {

@@ -10,7 +10,7 @@ $versionInfo = Get-Content -LiteralPath (Join-Path $root "version.json") -Raw -E
 $version = [string]$versionInfo.version
 if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "version.json contains an invalid version" }
 $project = Join-Path $root "Jellyfin.Plugin.Jellix\Jellyfin.Plugin.Jellix.csproj"
-$output = Join-Path $root "Jellyfin.Plugin.Jellix\bin\$Configuration\net9.0"
+$output = Join-Path $root "Jellyfin.Plugin.Jellix\bin\$Configuration\net10.0"
 $dist = Join-Path $root "dist"
 
 function Get-ContainedPath([string]$Parent, [string]$Child) {
@@ -34,8 +34,7 @@ $runtimeFiles = @(
     "Discord.Net.Core.dll",
     "Discord.Net.Dave.dll",
     "Discord.Net.Rest.dll",
-    "Discord.Net.WebSocket.dll",
-    "System.Linq.AsyncEnumerable.dll"
+    "Discord.Net.WebSocket.dll"
 )
 foreach ($file in $runtimeFiles) {
     $source = Join-Path $output $file

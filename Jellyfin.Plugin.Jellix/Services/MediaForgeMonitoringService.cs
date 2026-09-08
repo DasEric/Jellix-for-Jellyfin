@@ -194,9 +194,15 @@ public sealed class MediaForgeMonitoringService : BackgroundService
 
     private static string? ResolveDestination(UserLink link)
     {
-        var config = Plugin.Instance?.Configuration;
-        if (config is null || config.RequestNotificationMode == "off") return null;
-        if (config.RequestNotificationMode == "channel" && ulong.TryParse(config.RequestNotificationChannelId, out _)) return "channel:" + config.RequestNotificationChannelId;
+        return ResolveRequestDestination(link, Plugin.Instance?.Configuration.RequestNotificationMode);
+    }
+
+    internal static string? ResolveRequestDestination(UserLink link, string? mode)
+    {
+        if (mode is null or "off") return null;
+        // A MediaForge request belongs to one linked user. Never fall back to a
+        // public channel, because that can disclose a private request and route
+        // the result away from the requester.
         return "dm:" + link.DiscordUserId;
     }
 

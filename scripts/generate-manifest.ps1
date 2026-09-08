@@ -14,6 +14,20 @@ $name = "Jellix_$version.zip"
 $archive = Join-Path $root "dist\$name"
 if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) { throw "Release archive not found: $archive" }
 $meta = Get-Content -LiteralPath (Join-Path $root "Jellyfin.Plugin.Jellix\meta.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+$currentVersion = [ordered]@{
+    version = [string]$info.versionFourPart
+    changelog = [string]$meta.changelog
+    targetAbi = [string]$info.targetAbi
+    sourceUrl = "https://github.com/$RepositorySlug/releases/download/$ReleaseTag/$name"
+    checksum = (Get-FileHash -LiteralPath $archive -Algorithm MD5).Hash.ToUpperInvariant()
+    timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+}
+$versions = @($currentVersion)
+$historyPath = Join-Path $root "manifest-history.json"
+if (Test-Path -LiteralPath $historyPath -PathType Leaf) {
+    $history = @(Get-Content -LiteralPath $historyPath -Raw -Encoding UTF8 | ConvertFrom-Json)
+    $versions += @($history | Where-Object { [string]$_.version -ne [string]$info.versionFourPart })
+}
 $manifest = @([ordered]@{
     guid = "bea64f51-00f3-4535-8fd3-88bcd2785f24"
     name = "Jellix"
@@ -21,14 +35,7 @@ $manifest = @([ordered]@{
     overview = "Discord companion for Jellyfin"
     owner = "Eric (DasEric)"
     category = "General"
-    versions = @([ordered]@{
-        version = [string]$info.versionFourPart
-        changelog = [string]$meta.changelog
-        targetAbi = [string]$info.targetAbi
-        sourceUrl = "https://github.com/$RepositorySlug/releases/download/$ReleaseTag/$name"
-        checksum = (Get-FileHash -LiteralPath $archive -Algorithm MD5).Hash.ToUpperInvariant()
-        timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-    })
+    versions = $versions
 })
 $directory = Join-Path $root "repository"
 New-Item -ItemType Directory -Force -Path $directory | Out-Null

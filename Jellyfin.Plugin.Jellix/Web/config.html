@@ -44,11 +44,10 @@
         <h3>MediaForge</h3>
         <div class="checkboxContainer"><label><input is="emby-checkbox" id="MediaForgeEnabled" type="checkbox"><span>MediaForge-Integration aktivieren</span></label></div>
         <div class="inputContainer"><label class="inputLabel" for="MediaForgePollSeconds">Statusintervall (Sekunden)</label><input is="emby-input" id="MediaForgePollSeconds" type="number" min="15" max="3600"></div>
-        <div class="selectContainer"><label class="selectLabel" for="RequestNotificationMode">Anfrage-Benachrichtigungen</label><select is="emby-select" id="RequestNotificationMode"><option value="off">Aus</option><option value="dm">Direktnachricht</option><option value="channel">Kanal</option></select></div>
-        <div class="inputContainer"><label class="inputLabel" for="RequestNotificationChannelId">Anfragen-Kanal-ID</label><input is="emby-input" id="RequestNotificationChannelId" inputmode="numeric"></div>
+        <div class="selectContainer"><label class="selectLabel" for="RequestNotificationMode">Anfrage-Benachrichtigungen</label><select is="emby-select" id="RequestNotificationMode"><option value="off">Aus</option><option value="dm">Direktnachricht an anfragenden Benutzer</option></select><div class="fieldDescription">Persönliche Anfrageergebnisse werden aus Datenschutzgründen nie in einen öffentlichen Kanal umgeleitet.</div></div>
 
         <h3>Bibliothek und Anzeige</h3>
-        <div class="checkboxContainer"><label><input is="emby-checkbox" id="NewMediaNotificationsEnabled" type="checkbox"><span>Neue Filme und Serien posten</span></label></div>
+        <div class="checkboxContainer"><label><input is="emby-checkbox" id="NewMediaNotificationsEnabled" type="checkbox"><span>Neue Filme, Serien und Staffeln posten</span></label></div>
         <div class="checkboxContainer"><label><input is="emby-checkbox" id="NewEpisodeNotificationsEnabled" type="checkbox"><span>Neue Episoden posten</span></label></div>
         <div class="inputContainer"><label class="inputLabel" for="NewMediaChannelId">Neuigkeiten-Kanal-ID</label><input is="emby-input" id="NewMediaChannelId" inputmode="numeric"></div>
         <div class="selectContainer"><label class="selectLabel" for="NowPlayingMode">„Was läuft gerade?“</label><select is="emby-select" id="NowPlayingMode"><option value="off">Aus</option><option value="admin">Nur Admins</option><option value="public">Öffentlich</option></select></div>

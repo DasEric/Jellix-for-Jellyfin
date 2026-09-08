@@ -4,7 +4,7 @@
   const page = document.querySelector('#JellixConfigPage');
   const booleans = ['BotEnabled','SelfLinkEnabled','PasswordChangeEnabled','RevokeSessionsAfterPasswordChange','UnlockAccountEnabled','UserPageEnabled','StatisticsEnabled','LeaderboardEnabled','AchievementsEnabled','AchievementFilmFanEnabled','AchievementCineasteEnabled','AchievementSeriesJunkieEnabled','AchievementNightOwlEnabled','AchievementBingeWatcherEnabled','AchievementNoLifeEnabled','MediaForgeEnabled','NewMediaNotificationsEnabled','NewEpisodeNotificationsEnabled','NowPlayingShowUsernames','RandomEnabled','AccessRequestsEnabled','AssignStreamingRoleAfterApproval','StickyEnabled','AdminAlertsEnabled','CheckJellyfinUpdates'];
   const numbers = ['LinkCodeLifetimeMinutes','PasswordTicketLifetimeMinutes','CompletedPlaybackPercent','MediaForgePollSeconds','AccessRequestCooldownHours','StickyDebounceSeconds','HealthCheckMinutes','AuditRetentionDays'];
-  const strings = ['GuildId','JellyfinPublicUrl','Language','StreamingRoleId','RequestRoleId','AdminRoleId','AchievementChannelId','AchievementNotificationMode','TimeZoneId','RequestNotificationMode','RequestNotificationChannelId','NewMediaChannelId','NowPlayingMode','AccessRequestChannelId','AdminAlertMode','AdminAlertChannelId'];
+  const strings = ['GuildId','JellyfinPublicUrl','Language','StreamingRoleId','RequestRoleId','AdminRoleId','AchievementChannelId','AchievementNotificationMode','TimeZoneId','RequestNotificationMode','NewMediaChannelId','NowPlayingMode','AccessRequestChannelId','AdminAlertMode','AdminAlertChannelId'];
   let users = [];
 
   function loading(value) {
@@ -158,7 +158,7 @@
       numbers.forEach(function (key) { config[key] = Number(page.querySelector('#' + key).value); });
       strings.forEach(function (key) { config[key] = page.querySelector('#' + key).value.trim(); });
       validateSnowflake(config.GuildId, 'Discord-Server-ID', config.BotEnabled);
-      ['StreamingRoleId','RequestRoleId','AdminRoleId','AchievementChannelId','RequestNotificationChannelId','NewMediaChannelId','AccessRequestChannelId','AdminAlertChannelId'].forEach(function (key) { validateSnowflake(config[key], key, false); });
+      ['StreamingRoleId','RequestRoleId','AdminRoleId','AchievementChannelId','NewMediaChannelId','AccessRequestChannelId','AdminAlertChannelId'].forEach(function (key) { validateSnowflake(config[key], key, false); });
       validatePublicUrl(config.JellyfinPublicUrl);
       const token = page.querySelector('#DiscordToken').value.trim();
       const result = await ApiClient.updatePluginConfiguration(pluginId, config);

@@ -211,7 +211,7 @@ public sealed class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
         value.AdminAlertChannelId = Clean(value.AdminAlertChannelId);
         value.TimeZoneId = Clean(value.TimeZoneId);
         value.AchievementNotificationMode = value.AchievementNotificationMode is "off" or "channel" ? value.AchievementNotificationMode : "dm";
-        value.RequestNotificationMode = value.RequestNotificationMode is "off" or "channel" ? value.RequestNotificationMode : "dm";
+        value.RequestNotificationMode = value.RequestNotificationMode == "off" ? "off" : "dm";
         value.AdminAlertMode = value.AdminAlertMode == "channel" ? "channel" : "owner-dm";
         value.NowPlayingMode = value.NowPlayingMode is "off" or "public" ? value.NowPlayingMode : "admin";
         value.LinkCodeLifetimeMinutes = Math.Clamp(value.LinkCodeLifetimeMinutes, 1, 30);

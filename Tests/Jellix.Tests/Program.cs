@@ -1,10 +1,12 @@
 using System.Text;
 using Jellyfin.Plugin.Jellix.Data;
+using Jellyfin.Plugin.Jellix.Discord;
 using Jellyfin.Plugin.Jellix.Helpers;
 using Jellyfin.Plugin.Jellix.Integrations;
 using Jellyfin.Plugin.Jellix.Models;
 using Jellyfin.Plugin.Jellix.Security;
 using Jellyfin.Plugin.Jellix.Services;
+using MediaBrowser.Controller.Entities.TV;
 using Microsoft.Data.Sqlite;
 
 SQLitePCL.Batteries_V2.Init();
@@ -18,6 +20,9 @@ var tests = new (string Name, Func<Task> Run)[]
     ("database migrates legacy playback data", TestDatabaseMigrationAsync),
     ("playback accounting ignores pauses and seeks", TestPlaybackAsync),
     ("broken optional MediaForge bridge stays isolated", TestMediaForgeIsolationAsync),
+    ("request results always resolve to requester DM", TestRequestDestinationAsync),
+    ("library batches suppress child episode spam", TestLibraryHierarchyAsync),
+    ("sticky ignores only its own repost", TestStickyTriggerAsync),
 };
 var failed = 0;
 foreach (var test in tests)
@@ -151,6 +156,12 @@ static async Task TestDatabaseAsync()
         True(await database.IsLibraryItemPendingAsync(pendingId, CancellationToken.None).ConfigureAwait(false));
         await database.MarkLibraryItemAnnouncedAsync(pendingId, CancellationToken.None).ConfigureAwait(false);
         False(await database.IsLibraryItemPendingAsync(pendingId, CancellationToken.None).ConfigureAwait(false));
+        var identityItem = Guid.NewGuid();
+        True(await database.TryRegisterLibraryIdentityAsync("stable-identity", identityItem, DateTime.UtcNow, CancellationToken.None).ConfigureAwait(false));
+        True(await database.IsLibraryIdentityPendingAsync("stable-identity", CancellationToken.None).ConfigureAwait(false));
+        await database.MarkLibraryIdentityAnnouncedAsync("stable-identity", CancellationToken.None).ConfigureAwait(false);
+        False(await database.IsLibraryIdentityPendingAsync("stable-identity", CancellationToken.None).ConfigureAwait(false));
+        False(await database.TryRegisterLibraryIdentityAsync("stable-identity", Guid.NewGuid(), DateTime.UtcNow, CancellationToken.None).ConfigureAwait(false));
         var playbackUser = Guid.NewGuid();
         var playbackItem = Guid.NewGuid();
         var started = DateTime.UtcNow.AddHours(-2);
@@ -194,6 +205,7 @@ static Task TestPlaybackAsync()
 static async Task TestDatabaseMigrationAsync()
 {
     var path = TempDirectory();
+    var linkedUser = Guid.NewGuid();
     try
     {
         var databasePath = Path.Combine(path, "jellix.db");
@@ -220,10 +232,27 @@ static async Task TestDatabaseMigrationAsync()
                 );
                 INSERT INTO AccessRequests(GuildId, DiscordUserId, RequestedName, Status, CreatedUtc)
                 VALUES('guild', 'discord', 'Legacy', 'pending', $time);
+                CREATE TABLE DiscordUserLinks(
+                  GuildId TEXT NOT NULL, DiscordUserId TEXT NOT NULL, JellyfinUserId TEXT NOT NULL,
+                  LinkedUtc TEXT NOT NULL, LinkedBy TEXT NOT NULL, Active INTEGER NOT NULL DEFAULT 1,
+                  PRIMARY KEY(GuildId, DiscordUserId), UNIQUE(JellyfinUserId)
+                );
+                INSERT INTO DiscordUserLinks VALUES('guild', '223456789012345678', $linked, $time, 'legacy', 1);
+                CREATE TABLE NotificationOutbox(
+                  Id INTEGER PRIMARY KEY AUTOINCREMENT, Priority INTEGER NOT NULL, Kind TEXT NOT NULL,
+                  Destination TEXT NOT NULL, PayloadJson TEXT NOT NULL, DedupeKey TEXT NOT NULL UNIQUE,
+                  Attempts INTEGER NOT NULL DEFAULT 0, AvailableUtc TEXT NOT NULL,
+                  CompletedUtc TEXT NULL, LastError TEXT NULL
+                );
+                INSERT INTO NotificationOutbox(Priority, Kind, Destination, PayloadJson, DedupeKey, AvailableUtc)
+                VALUES(1, 'mediaforge-request', 'channel:123', '{}', 'mediaforge:' || $linked || ':request:available', $time);
+                INSERT INTO NotificationOutbox(Priority, Kind, Destination, PayloadJson, DedupeKey, AvailableUtc)
+                VALUES(1, 'mediaforge-request', 'channel:123', '{}', 'mediaforge:00000000000000000000000000000000:orphan:available', $time);
                 """;
             command.Parameters.AddWithValue("$user", Guid.NewGuid().ToString("N"));
             command.Parameters.AddWithValue("$item", Guid.NewGuid().ToString("N"));
             command.Parameters.AddWithValue("$time", DateTime.UtcNow.ToString("O"));
+            command.Parameters.AddWithValue("$linked", linkedUser.ToString("N"));
             await command.ExecuteNonQueryAsync().ConfigureAwait(false);
         }
 
@@ -242,6 +271,15 @@ static async Task TestDatabaseMigrationAsync()
         verify.CommandText = "SELECT DecisionReason FROM AccessRequests WHERE RequestedName='Legacy';";
         var decisionReason = await verify.ExecuteScalarAsync().ConfigureAwait(false);
         True(decisionReason is null or DBNull);
+        verify.CommandText = "SELECT Destination FROM NotificationOutbox WHERE DedupeKey LIKE $dedupe;";
+        verify.Parameters.Clear();
+        verify.Parameters.AddWithValue("$dedupe", $"mediaforge:{linkedUser:N}:%");
+        Equal("dm:223456789012345678", (string?)await verify.ExecuteScalarAsync().ConfigureAwait(false));
+        verify.CommandText = "SELECT CompletedUtc IS NOT NULL FROM NotificationOutbox WHERE DedupeKey LIKE '%:orphan:available';";
+        verify.Parameters.Clear();
+        Equal(1L, Convert.ToInt64(await verify.ExecuteScalarAsync().ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture));
+        verify.CommandText = "SELECT COUNT(*) FROM SchemaMigrations WHERE Version=5;";
+        Equal(1L, Convert.ToInt64(await verify.ExecuteScalarAsync().ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture));
     }
     finally
     {
@@ -254,6 +292,49 @@ static Task TestMediaForgeIsolationAsync()
 {
     var bridge = new MediaForgeBridgeClient(new Jellyfin.Plugin.MediaForge.Integration.ThrowingServiceProvider());
     False(bridge.IsAvailable);
+    return Task.CompletedTask;
+}
+
+static Task TestRequestDestinationAsync()
+{
+    var link = new UserLink("guild", "223456789012345678", Guid.NewGuid(), DateTime.UtcNow, "test");
+    Equal<string?>(null, MediaForgeMonitoringService.ResolveRequestDestination(link, "off"));
+    Equal("dm:223456789012345678", MediaForgeMonitoringService.ResolveRequestDestination(link, "dm"));
+    Equal("dm:223456789012345678", MediaForgeMonitoringService.ResolveRequestDestination(link, "channel"));
+    True(DiscordBotService.ShouldSuppressPersonalRequest("mediaforge-request", "off", "dm:223456789012345678"));
+    True(DiscordBotService.ShouldSuppressPersonalRequest("mediaforge-request", "dm", "channel:123456789012345678"));
+    False(DiscordBotService.ShouldSuppressPersonalRequest("mediaforge-request", "dm", "dm:223456789012345678"));
+    False(DiscordBotService.ShouldSuppressPersonalRequest("achievement", "off", "channel:123456789012345678"));
+    return Task.CompletedTask;
+}
+
+static Task TestLibraryHierarchyAsync()
+{
+    var seriesId = Guid.NewGuid();
+    var seasonId = Guid.NewGuid();
+    var episode = new Episode { SeriesId = seriesId, SeasonId = seasonId };
+    var season = new Season { SeriesId = seriesId };
+    True(LibraryNotificationService.HasNewParentInBatch(episode, new HashSet<Guid> { seriesId }, new HashSet<Guid>()));
+    True(LibraryNotificationService.HasNewParentInBatch(episode, new HashSet<Guid>(), new HashSet<Guid> { seasonId }));
+    True(LibraryNotificationService.HasNewParentInBatch(season, new HashSet<Guid> { seriesId }, new HashSet<Guid>()));
+    False(LibraryNotificationService.HasNewParentInBatch(episode, new HashSet<Guid>(), new HashSet<Guid>()));
+
+    var first = new Episode { ParentId = seasonId, Name = "Episode", ParentIndexNumber = 1, IndexNumber = 1 };
+    var second = new Episode { ParentId = seasonId, Name = "Episode", ParentIndexNumber = 1, IndexNumber = 2 };
+    False(string.Equals(
+        LibraryNotificationService.BuildStableIdentity(first),
+        LibraryNotificationService.BuildStableIdentity(second),
+        StringComparison.Ordinal));
+    return Task.CompletedTask;
+}
+
+static Task TestStickyTriggerAsync()
+{
+    False(DiscordBotService.ShouldIgnoreOwnStickyMessage(false, false, false));
+    False(DiscordBotService.ShouldIgnoreOwnStickyMessage(false, true, true));
+    False(DiscordBotService.ShouldIgnoreOwnStickyMessage(true, false, false));
+    True(DiscordBotService.ShouldIgnoreOwnStickyMessage(true, true, false));
+    True(DiscordBotService.ShouldIgnoreOwnStickyMessage(true, false, true));
     return Task.CompletedTask;
 }
 

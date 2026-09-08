@@ -1,0 +1,10 @@
+[
+  {
+    "version": "0.2.1.0",
+    "changelog": "Redesigned Discord embeds, public user results, complete command guide, owner-reviewed access requests, update alert destinations, and confirmed account unlinking.",
+    "targetAbi": "10.11.0.0",
+    "sourceUrl": "https://github.com/DasEric/Jellix-for-Jellyfin/releases/download/v0.2.1/Jellix_0.2.1.zip",
+    "checksum": "0223C8A8BBD9F47984D3FFD62395BAF6",
+    "timestamp": "2026-08-16T21:11:03Z"
+  }
+]

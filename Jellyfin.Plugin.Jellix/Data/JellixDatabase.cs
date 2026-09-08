@@ -7,7 +7,7 @@ namespace Jellyfin.Plugin.Jellix.Data;
 /// <summary>Transactional persistent state owned by Jellix.</summary>
 public sealed class JellixDatabase : IDisposable
 {
-    private const int CurrentSchemaVersion = 4;
+    private const int CurrentSchemaVersion = 5;
     private readonly string _connectionString;
     private readonly string _databasePath;
     private readonly SemaphoreSlim _migrationLock = new(1, 1);
@@ -60,6 +60,7 @@ public sealed class JellixDatabase : IDisposable
             await ExecuteAsync(connection, "CREATE INDEX IF NOT EXISTS IX_Playback_UserCompleted ON PlaybackSessions(JellyfinUserId, CompletedUtc);", cancellationToken).ConfigureAwait(false);
             await ExecuteAsync(connection, "UPDATE PlaybackSessions SET CompletedUtc=COALESCE(EndedUtc, LastEventUtc) WHERE Completed=1 AND CompletedUtc IS NULL;", cancellationToken).ConfigureAwait(false);
             await ExecuteAsync(connection, "INSERT OR IGNORE INTO PlaybackSegments(SessionKey, CumulativeWatchSeconds, EventUtc, WatchSeconds) SELECT SessionKey, ActualWatchSeconds, LastEventUtc, ActualWatchSeconds FROM PlaybackSessions WHERE ActualWatchSeconds>0;", cancellationToken).ConfigureAwait(false);
+            await MigrateLegacyMediaForgeDestinationsAsync(connection, cancellationToken).ConfigureAwait(false);
 
             await using var version = connection.CreateCommand();
             version.CommandText = "INSERT OR IGNORE INTO SchemaMigrations(Version, AppliedUtc) VALUES ($version, $utc);";
@@ -943,6 +944,104 @@ public sealed class JellixDatabase : IDisposable
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    private static async Task MigrateLegacyMediaForgeDestinationsAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    {
+        // Releases before 0.3 allowed personal request results to target a
+        // public channel. Redirect any still-pending jobs to the currently
+        // linked Discord user before the outbox worker can deliver them.
+        await ExecuteAsync(connection, """
+            UPDATE NotificationOutbox AS notification
+            SET Destination = (
+              SELECT 'dm:' || link.DiscordUserId
+              FROM DiscordUserLinks AS link
+              WHERE link.Active=1
+                AND link.JellyfinUserId=substr(notification.DedupeKey, 12, 32)
+              LIMIT 1
+            )
+            WHERE notification.CompletedUtc IS NULL
+              AND notification.Kind='mediaforge-request'
+              AND notification.Destination LIKE 'channel:%'
+              AND EXISTS (
+                SELECT 1
+                FROM DiscordUserLinks AS link
+                WHERE link.Active=1
+                  AND link.JellyfinUserId=substr(notification.DedupeKey, 12, 32)
+              );
+            """, cancellationToken).ConfigureAwait(false);
+
+        await using var abandon = connection.CreateCommand();
+        abandon.CommandText = """
+            UPDATE NotificationOutbox
+            SET CompletedUtc=$utc,
+                LastError='Legacy public request notification suppressed because no linked Discord user exists.'
+            WHERE CompletedUtc IS NULL
+              AND Kind='mediaforge-request'
+              AND Destination LIKE 'channel:%';
+            """;
+        abandon.Parameters.AddWithValue("$utc", FormatUtc(DateTime.UtcNow));
+        await abandon.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<bool> WasLibraryItemRecentlyAnnouncedAsync(Guid itemId, TimeSpan window, CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT 1 FROM LibraryAnnouncementState WHERE ItemId=$item AND AnnouncedUtc IS NOT NULL AND AnnouncedUtc >= $cutoff;";
+        command.Parameters.AddWithValue("$item", itemId.ToString("N"));
+        command.Parameters.AddWithValue("$cutoff", FormatUtc(DateTime.UtcNow.Subtract(window)));
+        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not null;
+    }
+
+    public async Task SeedLibraryIdentitiesAsync(IEnumerable<(string Identity, Guid ItemId)> identities, CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.Transaction = (SqliteTransaction)transaction;
+        command.CommandText = "INSERT OR IGNORE INTO LibraryAnnouncementIdentity(Identity, ItemId, FirstSeenUtc, AnnouncedUtc) VALUES ($identity, $item, $utc, $utc);";
+        var identityParameter = command.Parameters.Add("$identity", SqliteType.Text);
+        var itemParameter = command.Parameters.Add("$item", SqliteType.Text);
+        command.Parameters.AddWithValue("$utc", FormatUtc(DateTime.UtcNow));
+        foreach (var value in identities.DistinctBy(static value => value.Identity, StringComparer.Ordinal))
+        {
+            identityParameter.Value = value.Identity;
+            itemParameter.Value = value.ItemId.ToString("N");
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<bool> TryRegisterLibraryIdentityAsync(string identity, Guid itemId, DateTime firstSeenUtc, CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "INSERT OR IGNORE INTO LibraryAnnouncementIdentity(Identity, ItemId, FirstSeenUtc) VALUES ($identity, $item, $utc); SELECT changes();";
+        command.Parameters.AddWithValue("$identity", identity);
+        command.Parameters.AddWithValue("$item", itemId.ToString("N"));
+        command.Parameters.AddWithValue("$utc", FormatUtc(firstSeenUtc));
+        return Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture) == 1;
+    }
+
+    public async Task<bool> IsLibraryIdentityPendingAsync(string identity, CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT 1 FROM LibraryAnnouncementIdentity WHERE Identity=$identity AND AnnouncedUtc IS NULL;";
+        command.Parameters.AddWithValue("$identity", identity);
+        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not null;
+    }
+
+    public async Task MarkLibraryIdentityAnnouncedAsync(string identity, CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE LibraryAnnouncementIdentity SET AnnouncedUtc=$utc WHERE Identity=$identity AND AnnouncedUtc IS NULL;";
+        command.Parameters.AddWithValue("$identity", identity);
+        command.Parameters.AddWithValue("$utc", FormatUtc(DateTime.UtcNow));
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task MarkLegacyLibraryBaselineAnnouncedAsync(DateTime baselineUtc, CancellationToken cancellationToken)
     {
         await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
@@ -1196,6 +1295,12 @@ public sealed class JellixDatabase : IDisposable
         );
         CREATE TABLE IF NOT EXISTS LibraryAnnouncementState(
           ItemId TEXT PRIMARY KEY,
+          AnnouncedUtc TEXT NULL,
+          FirstSeenUtc TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS LibraryAnnouncementIdentity(
+          Identity TEXT PRIMARY KEY,
+          ItemId TEXT NOT NULL,
           AnnouncedUtc TEXT NULL,
           FirstSeenUtc TEXT NOT NULL
         );
