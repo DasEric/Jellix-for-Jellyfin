@@ -2,6 +2,7 @@
   'use strict';
   const entryId = 'jellix-link-sidebar';
   const modernEntryId = 'jellix-link-modern-sidebar';
+  const modernItemId = 'jellix-link-modern-sidebar-item';
   const modalId = 'jellix-link-modal';
   let language = 'de';
   let enabled = false;
@@ -14,7 +15,8 @@
   function inject() {
     const existing = document.getElementById(entryId);
     const modernExisting = document.getElementById(modernEntryId);
-    if (!enabled) { if (existing) existing.remove(); if (modernExisting) modernExisting.remove(); return; }
+    const modernItem = document.getElementById(modernItemId);
+    if (!enabled) { if (existing) existing.remove(); if (modernItem) modernItem.remove(); else if (modernExisting) modernExisting.remove(); return; }
     if (existing) {
       const label = existing.querySelector('.navMenuOptionText');
       if (label) {
@@ -34,7 +36,8 @@
     }
     if (modernExisting) {
       const label = modernExisting.querySelector('[data-jellix-label]');
-      if (label) label.textContent = linkLabel();
+      const newLabel = linkLabel();
+      if (label && label.textContent !== newLabel) label.textContent = newLabel;
     } else if (typeof document.querySelectorAll === 'function') {
       const drawer = Array.from(document.querySelectorAll('.MuiDrawer-paper')).find((item) => !(item.closest && item.closest('.mainDrawer')));
       const list = drawer && drawer.querySelector('ul.MuiList-root');
@@ -42,7 +45,12 @@
         const modern = createEntry(modernEntryId, 'MuiButtonBase-root MuiListItemButton-root MuiListItemButton-gutters', '<span class="material-icons" aria-hidden="true" style="min-width:2.5rem">link</span><span data-jellix-label></span>');
         modern.querySelector('[data-jellix-label]').textContent = linkLabel();
         modern.style.cssText = 'display:flex;align-items:center;box-sizing:border-box;width:100%;min-height:48px;padding:8px 16px;color:inherit;text-decoration:none;gap:.5rem;';
-        list.appendChild(modern);
+        const item = document.createElement('li');
+        item.id = modernItemId;
+        item.className = 'MuiListItem-root MuiListItem-gutters MuiListItem-padding';
+        item.style.cssText = 'padding:0;';
+        item.appendChild(modern);
+        list.appendChild(item);
       }
     }
   }
@@ -51,8 +59,12 @@
     const entry = document.createElement('a'); entry.id = id; entry.href = '#'; entry.className = className; entry.innerHTML = html;
     entry.addEventListener('click', function (event) {
       event.preventDefault();
-      const backdrop = document.querySelector('.mainDrawer-backdrop');
-      if (backdrop) backdrop.click();
+      const modernDrawer = entry.closest && entry.closest('.MuiDrawer-paper');
+      if (!modernDrawer) {
+        event.stopPropagation();
+        const backdrop = document.querySelector('.mainDrawer-backdrop');
+        if (backdrop) backdrop.click();
+      }
       openModal();
     });
     return entry;

@@ -1,6 +1,6 @@
 {
   "category": "General",
-  "changelog": "Jellyfin 12 and .NET 10 compatibility, requester-only Discord DMs, durable sticky refreshes, hierarchical library announcements, and Modern layout support.",
+  "changelog": "Fixes a Jellyfin 12 dashboard navigation freeze caused by the Modern sidebar observer and uses valid MUI list markup.",
   "description": "Discord account tools, playback statistics, notifications and optional MediaForge requests for Jellyfin.",
   "guid": "bea64f51-00f3-4535-8fd3-88bcd2785f24",
   "name": "Jellix",
@@ -8,7 +8,7 @@
   "owner": "Eric (DasEric)",
   "targetAbi": "12.0.0.0",
   "timestamp": "2026-09-08T00:00:00Z",
-  "version": "0.3.0.0",
+  "version": "0.3.1.0",
   "status": "Active",
   "autoUpdate": true
 }

@@ -1,6 +1,14 @@
 'use strict';
 
 const fs = require('fs');
+const injectionSource = fs.readFileSync('Jellyfin.Plugin.Jellix/Web/injection.js', 'utf8');
+
+if (!injectionSource.includes('if (label && label.textContent !== newLabel) label.textContent = newLabel;')) {
+  throw new Error('Modern navigation labels must not mutate the DOM when their text is unchanged.');
+}
+if (!injectionSource.includes("document.createElement('li')") || !injectionSource.includes('item.appendChild(modern)')) {
+  throw new Error('The Modern navigation entry must use Jellyfin 12 semantic list markup.');
+}
 
 const byId = new Map();
 class Element {
@@ -66,7 +74,7 @@ global.ApiClient = {
   }
 };
 
-eval(fs.readFileSync('Jellyfin.Plugin.Jellix/Web/injection.js', 'utf8'));
+eval(injectionSource);
 
 setTimeout(async function () {
   const entry = byId.get('jellix-link-sidebar');
@@ -76,7 +84,7 @@ setTimeout(async function () {
     process.exit(1);
   }
 
-  entry.handlers.click({ preventDefault: function () {} });
+  entry.handlers.click({ preventDefault: function () {}, stopPropagation: function () {} });
   const overlay = byId.get('jellix-link-modal');
   const primary = overlay?.children[0]?.children[3];
   if (!primary || primary.textContent !== 'Disconnect Discord') {
