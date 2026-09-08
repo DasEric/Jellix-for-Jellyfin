@@ -4,6 +4,7 @@
   const modernEntryId = 'jellix-link-modern-sidebar';
   const modernItemId = 'jellix-link-modern-sidebar-item';
   const modalId = 'jellix-link-modal';
+  const officialLinkHash = '#/jellix-discord';
   let language = 'de';
   let enabled = false;
   let linked = false;
@@ -68,6 +69,13 @@
       openModal();
     });
     return entry;
+  }
+
+  function handleOfficialLink(event) {
+    const anchor = event.target && event.target.closest ? event.target.closest('a[href]') : null;
+    if (!anchor || new URL(anchor.href, document.baseURI).hash !== officialLinkHash) return;
+    event.preventDefault();
+    openModal();
   }
 
   function button(label, danger) {
@@ -137,6 +145,7 @@
 
   async function start() {
     await refreshStatus();
+    document.addEventListener('click', handleOfficialLink, true);
     const observer = new MutationObserver(inject);
     observer.observe(document.body, { childList: true, subtree: true });
     window.addEventListener('focus', refreshStatus);

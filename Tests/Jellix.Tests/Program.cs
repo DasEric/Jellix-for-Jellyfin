@@ -15,6 +15,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("link code hashing is normalized", TestLinkHashAsync),
     ("secret storage is encrypted", TestSecretStoreAsync),
     ("web injection is idempotent", TestWebInjectionAsync),
+    ("Jellyfin 12 menu link patch is safe", TestWebConfigMenuLinkAsync),
     ("public password URLs reject unsafe components", TestPublicUrlAsync),
     ("database preserves one-to-one links and state", TestDatabaseAsync),
     ("database migrates legacy playback data", TestDatabaseMigrationAsync),
@@ -292,6 +293,58 @@ static Task TestMediaForgeIsolationAsync()
 {
     var bridge = new MediaForgeBridgeClient(new Jellyfin.Plugin.MediaForge.Integration.ThrowingServiceProvider());
     False(bridge.IsAvailable);
+    return Task.CompletedTask;
+}
+
+static Task TestWebConfigMenuLinkAsync()
+{
+    const string original = "{\"multiserver\":true,\"menuLinks\":[{\"name\":\"Existing\",\"icon\":\"home\",\"url\":\"https://example.test\"}]}";
+    var enabled = WebConfigMenuLink.ApplyToJson(original, "Discord", "forum", "#/jellix-discord", true);
+    True(enabled.Contains("#/jellix-discord", StringComparison.Ordinal));
+    True(enabled.Contains("https://example.test", StringComparison.Ordinal));
+    Equal(enabled, WebConfigMenuLink.ApplyToJson(enabled, "Discord", "forum", "#/jellix-discord", true));
+
+    var allPlugins = WebConfigMenuLink.ApplyToJson(enabled, "Anfragen", "playlist_add", "#/mediaforge-requests", true);
+    allPlugins = WebConfigMenuLink.ApplyToJson(allPlugins, "Theme Store", "palette", "#/theme-store", true);
+    var withoutJellix = WebConfigMenuLink.ApplyToJson(allPlugins, "Discord", "forum", "#/jellix-discord", false);
+    True(withoutJellix.Contains("#/mediaforge-requests", StringComparison.Ordinal));
+    True(withoutJellix.Contains("#/theme-store", StringComparison.Ordinal));
+
+    const string duplicate = "{\"menuLinks\":[{\"name\":\"Old\",\"url\":\"#/jellix-discord\"},{\"name\":\"Old again\",\"url\":\"#/jellix-discord\"}]}";
+    var deduplicated = WebConfigMenuLink.ApplyToJson(duplicate, "Discord", "forum", "#/jellix-discord", true);
+    Equal(1, deduplicated.Split("#/jellix-discord", StringSplitOptions.None).Length - 1);
+
+    var disabled = WebConfigMenuLink.ApplyToJson(enabled, "Discord", "forum", "#/jellix-discord", false);
+    False(disabled.Contains("#/jellix-discord", StringComparison.Ordinal));
+    True(disabled.Contains("https://example.test", StringComparison.Ordinal));
+    Equal(disabled, WebConfigMenuLink.ApplyToJson(disabled, "Discord", "forum", "#/jellix-discord", false));
+
+    var rejectedInvalidShape = false;
+    try
+    {
+        WebConfigMenuLink.ApplyToJson("{\"menuLinks\":{}}", "Discord", "forum", "#/jellix-discord", true);
+    }
+    catch (InvalidDataException)
+    {
+        rejectedInvalidShape = true;
+    }
+
+    True(rejectedInvalidShape);
+
+    var directory = TempDirectory();
+    try
+    {
+        var path = Path.Combine(directory, "config.json");
+        File.WriteAllText(path, original);
+        True(WebConfigMenuLink.UpdateFile(path, "Discord", "forum", "#/jellix-discord", true));
+        False(WebConfigMenuLink.UpdateFile(path, "Discord", "forum", "#/jellix-discord", true));
+        True(File.ReadAllText(path).Contains("#/jellix-discord", StringComparison.Ordinal));
+    }
+    finally
+    {
+        Directory.Delete(directory, recursive: true);
+    }
+
     return Task.CompletedTask;
 }
 

@@ -15,6 +15,7 @@ namespace Jellyfin.Plugin.Jellix;
 public sealed class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
 {
     public const string PluginGuid = "bea64f51-00f3-4535-8fd3-88bcd2785f24";
+    private const string MenuLinkUrl = "#/jellix-discord";
     private readonly IApplicationPaths _applicationPaths;
     private int _transformationRegistered;
     private int _transformationRegistrationInProgress;
@@ -53,6 +54,7 @@ public sealed class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     public override void OnUninstalling()
     {
         UpdateIndexHtml(false);
+        UpdateMenuLink(false);
         base.OnUninstalling();
     }
 
@@ -102,13 +104,29 @@ public sealed class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
 
     private string IndexHtmlPath => Path.Combine(_applicationPaths.WebPath, "index.html");
 
+    private string WebConfigPath => Path.Combine(_applicationPaths.WebPath, "config.json");
+
     private void ApplyWebIntegration(bool enabled)
     {
         UpdateIndexHtml(enabled);
+        UpdateMenuLink(enabled);
         if (enabled && Volatile.Read(ref _transformationRegistered) == 0
             && Interlocked.CompareExchange(ref _transformationRegistrationInProgress, 1, 0) == 0)
         {
             _ = Task.Run(RegisterTransformationAsync);
+        }
+    }
+
+    private void UpdateMenuLink(bool enabled)
+    {
+        try
+        {
+            WebConfigMenuLink.UpdateFile(WebConfigPath, "Discord", "forum", MenuLinkUrl, enabled);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException or Newtonsoft.Json.JsonException)
+        {
+            // The legacy/mobile DOM integration remains available when web config is read-only.
+            Console.Error.WriteLine("[Jellix] Could not update jellyfin-web/config.json: " + exception.Message);
         }
     }
 

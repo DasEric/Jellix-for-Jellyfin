@@ -46,6 +46,7 @@ sidebar.appendChild(custom);
 
 global.document = {
   body: body,
+  baseURI: 'http://jellyfin.test/web/',
   readyState: 'complete',
   createElement: function (tag) { return new Element(tag); },
   getElementById: function (id) { return byId.get(id) || null; },
@@ -53,7 +54,7 @@ global.document = {
     if (selector.includes('.mainDrawer-scrollContainer')) return sidebar;
     return null;
   },
-  addEventListener: function () {}
+  addEventListener: function (name, handler) { if (name === 'click') this.clickHandler = handler; }
 };
 global.MutationObserver = class { constructor(handler) { this.handler = handler; } observe() {} };
 global.setInterval = function (handler) { setTimeout(handler, 0); return 1; };
@@ -81,6 +82,17 @@ setTimeout(async function () {
   const label = entry?.querySelector('.navMenuOptionText');
   if (!entry || label?.textContent !== 'Discord Connected') {
     console.error('Injected navigation did not show the connected state.');
+    process.exit(1);
+  }
+
+  let officialPrevented = false;
+  const officialAnchor = { href: 'http://jellyfin.test/web/#/jellix-discord' };
+  document.clickHandler({
+    target: { closest: function () { return officialAnchor; } },
+    preventDefault: function () { officialPrevented = true; }
+  });
+  if (!officialPrevented || !byId.get('jellix-link-modal')) {
+    console.error('Jellyfin 12 native menu link was not intercepted in the current page.');
     process.exit(1);
   }
 

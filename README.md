@@ -144,11 +144,19 @@ Every release includes a separate PowerShell watchdog. It runs outside Jellyfin 
 8. Configure the public Jellyfin URL when password changes or Discord onboarding are enabled.
 9. Restart Jellyfin after changing the bot token, Discord server, language, or MediaForge installation.
 
+On Jellyfin 12, Jellix registers a native **Discord** link in Jellyfin Web's
+`config.json`. Jellyfin renders it in the Modern desktop app bar, the overflow
+menu, and the mobile drawer. Reload already open web clients after installation
+or after changing **User page enabled**. Jellix preserves unrelated custom links.
+If the web configuration is mounted read-only, add
+`{"name":"Discord","icon":"forum","url":"#/jellix-discord"}` to its
+`menuLinks` array manually; the server log reports this condition.
+
 Enable Discord's Developer Mode to copy server, role, channel, and user IDs.
 
 ## Linking an account
 
-Open **Connect Discord** in Jellyfin, create a one-time code, and enter it with `/link` in Discord. When German is selected, the command is `/verbinden`. Administrators can also create links directly from the Jellix configuration page.
+Open **Discord** in Jellyfin, create a one-time code, and enter it with `/link` in Discord. When German is selected, the command is `/verbinden`. Administrators can also create links directly from the Jellix configuration page.
 
 After linking, the Jellyfin menu entry changes to **Discord Connected**. Opening it again allows the user to unlink after a confirmation prompt.
 
