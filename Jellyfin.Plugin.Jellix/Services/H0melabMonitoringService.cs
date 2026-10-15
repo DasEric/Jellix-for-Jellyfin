@@ -1,4 +1,6 @@
 using System.Text.Json;
+using Jellyfin.Data;
+using Jellyfin.Database.Implementations.Enums;
 using Jellyfin.Plugin.Jellix.Data;
 using Jellyfin.Plugin.Jellix.Discord;
 using Jellyfin.Plugin.Jellix.Integrations;
@@ -9,25 +11,25 @@ using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.Jellix.Services;
 
-/// <summary>Observes MediaForge without becoming a second request data source.</summary>
-public sealed class MediaForgeMonitoringService : BackgroundService
+/// <summary>Observes the H0melab connector without becoming a second request data source.</summary>
+public sealed class H0melabMonitoringService : BackgroundService
 {
     private static readonly Action<ILogger, Exception?> LogCheckFailure = LoggerMessage.Define(
         LogLevel.Warning,
-        new EventId(3101, "MediaForgeMonitorFailed"),
-        "Jellix MediaForge monitoring failed");
-    private readonly MediaForgeBridgeClient _bridge;
+        new EventId(3101, "H0melabMonitorFailed"),
+        "Jellix H0melab monitoring failed");
+    private readonly H0melabBridgeClient _bridge;
     private readonly JellixDatabase _database;
     private readonly IUserManager _userManager;
     private readonly DiscordBotService _discord;
-    private readonly ILogger<MediaForgeMonitoringService> _logger;
+    private readonly ILogger<H0melabMonitoringService> _logger;
 
-    public MediaForgeMonitoringService(
-        MediaForgeBridgeClient bridge,
+    public H0melabMonitoringService(
+        H0melabBridgeClient bridge,
         JellixDatabase database,
         IUserManager userManager,
         DiscordBotService discord,
-        ILogger<MediaForgeMonitoringService> logger)
+        ILogger<H0melabMonitoringService> logger)
     {
         _bridge = bridge;
         _database = database;
@@ -59,17 +61,17 @@ public sealed class MediaForgeMonitoringService : BackgroundService
         while (!stoppingToken.IsCancellationRequested)
         {
             var config = Plugin.Instance?.Configuration;
-            if (config?.MediaForgeEnabled == true)
+            if (config?.H0melabEnabled == true)
             {
                 try
                 {
                     await PollAsync(stoppingToken).ConfigureAwait(false);
-                    await UpdateIncidentAsync("mediaforge-unreachable", false, "MediaForge wieder erreichbar.", "MediaForge is reachable again.", stoppingToken).ConfigureAwait(false);
+                    await UpdateIncidentAsync("h0melab-unreachable", false, "H0melab wieder erreichbar.", "H0melab is reachable again.", stoppingToken).ConfigureAwait(false);
                 }
-                catch (Exception exception) when (exception is MediaForgeBridgeException or MediaForgeBridgeUnavailableException)
+                catch (Exception exception) when (exception is H0melabBridgeException or H0melabBridgeUnavailableException)
                 {
                     LogCheckFailure(_logger, exception);
-                    await UpdateIncidentAsync("mediaforge-unreachable", true, "MediaForge ist nicht erreichbar oder inkompatibel.", "MediaForge is unavailable or incompatible.", stoppingToken).ConfigureAwait(false);
+                    await UpdateIncidentAsync("h0melab-unreachable", true, "H0melab ist nicht erreichbar oder inkompatibel.", "H0melab is unavailable or incompatible.", stoppingToken).ConfigureAwait(false);
                 }
                 catch (Exception exception) when (exception is not OperationCanceledException)
                 {
@@ -77,7 +79,7 @@ public sealed class MediaForgeMonitoringService : BackgroundService
                 }
             }
 
-            var seconds = Math.Clamp(config?.MediaForgePollSeconds ?? 60, 15, 3600);
+            var seconds = Math.Clamp(config?.H0melabPollSeconds ?? 60, 15, 3600);
             await Task.Delay(TimeSpan.FromSeconds(seconds), stoppingToken).ConfigureAwait(false);
         }
     }
@@ -86,7 +88,7 @@ public sealed class MediaForgeMonitoringService : BackgroundService
     {
         if (!_bridge.IsAvailable)
         {
-            throw new MediaForgeBridgeUnavailableException("MediaForge Jellix bridge missing.");
+            throw new H0melabBridgeUnavailableException("H0melab Jellix bridge missing.");
         }
 
         using (var status = await _bridge.InvokeAsync("status", Guid.Empty, "Jellix", null, cancellationToken).ConfigureAwait(false))
@@ -95,41 +97,47 @@ public sealed class MediaForgeMonitoringService : BackgroundService
             if (!root.TryGetProperty("healthy", out var healthyValue) || healthyValue.ValueKind is not (JsonValueKind.True or JsonValueKind.False)
                 || !root.TryGetProperty("apiKeyValid", out var keyValue) || keyValue.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
             {
-                throw new MediaForgeBridgeException("MediaForge returned an invalid status response.");
+                throw new H0melabBridgeException("H0melab returned an invalid status response.");
             }
 
             var healthy = healthyValue.GetBoolean();
             var apiKeyValid = keyValue.GetBoolean();
             await UpdateIncidentAsync(
-                "mediaforge-api-key-invalid",
+                "h0melab-api-key-invalid",
                 !apiKeyValid,
-                apiKeyValid ? "Der MediaForge API-Key ist wieder gültig." : "Der MediaForge API-Key ist ungültig.",
-                apiKeyValid ? "The MediaForge API key is valid again." : "The MediaForge API key is invalid.",
+                apiKeyValid ? "Der H0melab API-Key ist wieder gültig." : "Der H0melab API-Key ist ungültig.",
+                apiKeyValid ? "The H0melab API key is valid again." : "The H0melab API key is invalid.",
                 cancellationToken).ConfigureAwait(false);
             if (!healthy)
             {
-                throw new MediaForgeBridgeException("MediaForge reported an unhealthy state.");
+                throw new H0melabBridgeException("H0melab reported an unhealthy state.");
             }
         }
 
         foreach (var link in await _database.ListLinksAsync(cancellationToken).ConfigureAwait(false))
         {
             var user = _userManager.GetUserById(link.JellyfinUserId);
-            if (user is null)
+            if (user is null || user.HasPermission(PermissionKind.IsDisabled))
             {
                 continue;
             }
 
-            using var response = await _bridge.InvokeAsync("list", link.JellyfinUserId, user.Username, null, cancellationToken).ConfigureAwait(false);
-            if (!response.RootElement.TryGetProperty("items", out var items) || items.ValueKind != JsonValueKind.Array)
+            try
             {
-                throw new MediaForgeBridgeException("MediaForge returned no request list.");
-            }
+                using var response = await _bridge.InvokeAsync("list", link.JellyfinUserId, user.Username, null, cancellationToken).ConfigureAwait(false);
+                if (!response.RootElement.TryGetProperty("items", out var items) || items.ValueKind != JsonValueKind.Array)
+                {
+                    throw new H0melabBridgeException("H0melab returned no request list.");
+                }
 
-            foreach (var item in items.EnumerateArray().Take(500))
-            {
-                await ObserveRequestAsync(link, item, cancellationToken).ConfigureAwait(false);
+                foreach (var item in items.EnumerateArray().Take(500))
+                {
+                    await ObserveRequestAsync(link, item, cancellationToken).ConfigureAwait(false);
+                }
             }
+            // A deleted/disabled user or rejected private list must not starve other linked users.
+            catch (Exception exception) when (exception is H0melabBridgeException or H0melabBridgeUnavailableException)
+            { LogCheckFailure(_logger, exception); }
         }
     }
 
@@ -142,7 +150,7 @@ public sealed class MediaForgeMonitoringService : BackgroundService
             return;
         }
 
-        var stateKey = $"mediaforge:{link.JellyfinUserId:N}:{requestId}";
+        var stateKey = $"h0melab:{link.JellyfinUserId:N}:{requestId}";
         var previous = await _database.GetNotificationStateAsync(stateKey, cancellationToken).ConfigureAwait(false);
         if (previous is null || string.Equals(previous, status, StringComparison.Ordinal) || !IsNotifiable(status))
         {
@@ -155,8 +163,8 @@ public sealed class MediaForgeMonitoringService : BackgroundService
         var description = status switch
         {
             "available" or "completed" => (Plugin.Instance?.Configuration.Language == "en"
-                ? $"**{title}** was added to Jellyfin."
-                : $"**{title}** wurde zu Jellyfin hinzugefügt."),
+                ? $"The H0melab connector reports **{title}** as completed."
+                : $"Der H0melab-Connector meldet **{title}** als abgeschlossen."),
             "rejected" => (Plugin.Instance?.Configuration.Language == "en"
                 ? $"**{title}** was rejected."
                 : $"**{title}** wurde abgelehnt."),
@@ -169,16 +177,16 @@ public sealed class MediaForgeMonitoringService : BackgroundService
         {
             var payload = JsonSerializer.Serialize(new
             {
-                title = isFailure ? "⚠️ MediaForge" : "🎉 " + (Plugin.Instance?.Configuration.Language == "en" ? "Your request is available!" : "Deine Anfrage ist verfügbar!"),
+                title = isFailure ? "⚠️ H0melab Downloader" : "🎉 " + (Plugin.Instance?.Configuration.Language == "en" ? "Your download is complete!" : "Dein Download ist abgeschlossen!"),
                 description,
                 color = isFailure ? 0xE74C3Cu : 0x2ECC71u,
             });
-            await _database.EnqueueNotificationAsync(NotificationPriority.Normal, "mediaforge-request", destination, payload, $"mediaforge:{link.JellyfinUserId:N}:{requestId}:{status}", DateTime.UtcNow, cancellationToken).ConfigureAwait(false);
+            await _database.EnqueueNotificationAsync(NotificationPriority.Normal, "h0melab-request", destination, payload, $"h0melab:{link.JellyfinUserId:N}:{requestId}:{status}", DateTime.UtcNow, cancellationToken).ConfigureAwait(false);
         }
 
         try
         {
-            await _database.WriteAuditAsync("bot", "jellix", isFailure ? "request-failed" : "request-available", "mediaforge-request", requestId, true, title, cancellationToken).ConfigureAwait(false);
+            await _database.WriteAuditAsync("bot", "jellix", isFailure ? "request-failed" : "request-completed", "h0melab-request", requestId, true, title, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception exception)
         {
@@ -186,7 +194,7 @@ public sealed class MediaForgeMonitoringService : BackgroundService
         }
         if (status == "failed")
         {
-            await QueueAdminAlertAsync("Ein MediaForge-Download ist fehlgeschlagen: " + title, "A MediaForge download failed: " + title, $"download:{link.JellyfinUserId:N}:{requestId}:{status}", cancellationToken).ConfigureAwait(false);
+            await QueueAdminAlertAsync("Ein H0melab-Download ist fehlgeschlagen: " + title, "A H0melab download failed: " + title, $"h0melab-download:{link.JellyfinUserId:N}:{requestId}:{status}", cancellationToken).ConfigureAwait(false);
         }
 
         await _database.TrySetNotificationStateAsync(stateKey, status, cancellationToken).ConfigureAwait(false);
@@ -200,7 +208,7 @@ public sealed class MediaForgeMonitoringService : BackgroundService
     internal static string? ResolveRequestDestination(UserLink link, string? mode)
     {
         if (mode is null or "off") return null;
-        // A MediaForge request belongs to one linked user. Never fall back to a
+        // A connector request belongs to one linked user. Never fall back to a
         // public channel, because that can disclose a private request and route
         // the result away from the requester.
         return "dm:" + link.DiscordUserId;

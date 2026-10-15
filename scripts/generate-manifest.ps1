@@ -31,7 +31,7 @@ if (Test-Path -LiteralPath $historyPath -PathType Leaf) {
 $manifest = @([ordered]@{
     guid = "bea64f51-00f3-4535-8fd3-88bcd2785f24"
     name = "Jellix"
-    description = "Discord account tools, playback statistics, notifications and optional MediaForge requests for Jellyfin."
+    description = [string]$meta.description
     overview = "Discord companion for Jellyfin"
     owner = "Eric (DasEric)"
     category = "General"

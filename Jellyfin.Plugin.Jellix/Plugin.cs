@@ -240,7 +240,7 @@ public sealed class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
         value.LinkCodeLifetimeMinutes = Math.Clamp(value.LinkCodeLifetimeMinutes, 1, 30);
         value.PasswordTicketLifetimeMinutes = Math.Clamp(value.PasswordTicketLifetimeMinutes, 1, 30);
         value.CompletedPlaybackPercent = Math.Clamp(value.CompletedPlaybackPercent, 50, 100);
-        value.MediaForgePollSeconds = Math.Clamp(value.MediaForgePollSeconds, 15, 3600);
+        value.H0melabPollSeconds = Math.Clamp(value.H0melabPollSeconds, 15, 3600);
         value.SeriesQuietSeconds = Math.Clamp(value.SeriesQuietSeconds, 10, 1800);
         value.SeriesMergeHours = Math.Clamp(value.SeriesMergeHours, 1, 168);
         value.LibraryOverviewMinutes = Math.Clamp(value.LibraryOverviewMinutes, 1, 1440);

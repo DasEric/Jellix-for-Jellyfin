@@ -32,7 +32,7 @@ public sealed class JellixController : ControllerBase
     private readonly IUserManager _userManager;
     private readonly ISessionManager _sessionManager;
     private readonly DiscordBotService _discord;
-    private readonly MediaForgeBridgeClient _mediaForge;
+    private readonly H0melabBridgeClient _h0melab;
     private readonly LibraryCatalog _catalog;
     private readonly ILogger<JellixController> _logger;
 
@@ -44,7 +44,7 @@ public sealed class JellixController : ControllerBase
         IUserManager userManager,
         ISessionManager sessionManager,
         DiscordBotService discord,
-        MediaForgeBridgeClient mediaForge,
+        H0melabBridgeClient h0melab,
         LibraryCatalog catalog,
         ILogger<JellixController> logger)
     {
@@ -55,7 +55,7 @@ public sealed class JellixController : ControllerBase
         _userManager = userManager;
         _sessionManager = sessionManager;
         _discord = discord;
-        _mediaForge = mediaForge;
+        _h0melab = h0melab;
         _catalog = catalog;
         _logger = logger;
     }
@@ -193,14 +193,14 @@ public sealed class JellixController : ControllerBase
     [Authorize(Policy = Policies.RequiresElevation)]
     public async Task<IActionResult> Diagnostics(CancellationToken cancellationToken)
     {
-        var mediaForgeAssembly = AppDomain.CurrentDomain.GetAssemblies()
-            .FirstOrDefault(static value => value.GetName().Name?.Equals("Jellyfin.Plugin.MediaForge", StringComparison.Ordinal) == true);
+        var connectorAssembly = AppDomain.CurrentDomain.GetAssemblies()
+            .FirstOrDefault(static value => value.GetName().Name?.Equals("Jellyfin.Plugin.AniWorld", StringComparison.Ordinal) == true);
         return Ok(new
         {
             discordReady = _discord.IsReady,
-            mediaForgeInstalled = mediaForgeAssembly is not null,
-            mediaForgeBridgeAvailable = _mediaForge.IsAvailable,
-            mediaForgeVersion = mediaForgeAssembly?.GetName().Version?.ToString(3),
+            h0melabInstalled = connectorAssembly is not null,
+            h0melabBridgeAvailable = _h0melab.IsAvailable,
+            h0melabVersion = connectorAssembly?.GetName().Version?.ToString(3),
             pendingNotifications = await _database.GetPendingNotificationCountAsync(cancellationToken).ConfigureAwait(false),
             database = "ok",
             configurationIssues = _discord.ConfigurationIssues,

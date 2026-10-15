@@ -25,17 +25,17 @@ The server administrator can require a configured streaming role for general use
 
 The optional **Library overview** is a persistent channel embed configured in the Jellyfin Jellix dashboard, not a slash command. It also shows used/total/free media storage and edits the same message instead of reposting it. TV announcements likewise summarize actual new episodes by series and update late arrivals in place during the configured merge window. Neither type of dynamic message can be converted into a static `/sticky` snapshot.
 
-## MediaForge commands
+## H0melab Downloader commands
 
-These commands appear only when the optional MediaForge integration is enabled and its Jellix bridge is available. A linked account and any configured request role are required.
+These commands appear only when the optional H0melab integration is enabled and the AniWorld Requests connector's Jellix bridge is available. A linked account and any configured request role are required.
 
 | English | German | What it does | Visibility |
 | --- | --- | --- | --- |
-| `/request-movie query:Interstellar` | `/film-anfrage suche:Interstellar` | Searches MediaForge for a movie and lets the user choose the correct result. | Private search and confirmation. |
-| `/request-series query:Dexter` | `/serien-anfrage suche:Dexter` | Searches MediaForge for a series and lets the user choose the correct result. | Private search and confirmation. |
-| `/requests` | `/anfragen` | Shows the user's MediaForge requests, states, and available progress. | Private because it is personal request history. |
+| `/request-movie query:Interstellar` | `/film-anfrage suche:Interstellar` | Searches H0melab through the connector for a movie and lets the user choose the correct result. | Private search and confirmation. |
+| `/request-series query:Dexter` | `/serien-anfrage suche:Dexter` | Searches H0melab through the connector for a series and lets the user choose the correct result. | Private search and confirmation. |
+| `/requests` | `/anfragen` | Shows the user's connector requests, states, and available progress. | Private because it is personal request history. |
 
-MediaForge remains the only source of truth for requests. Jellix does not maintain a second request database.
+The H0melab Jellyfin connector remains the only source of truth. Its current approval/direct-download policy applies at submission; approve pending requests in its administration page. Jellix has no second request database or separate approval setting. Download completion is not proof of Jellyfin availability.
 
 ## Administrator commands
 

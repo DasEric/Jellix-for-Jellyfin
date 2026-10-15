@@ -254,11 +254,11 @@ public sealed partial class JellixDatabase
     {
         await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT ChannelId, MessageId, ContentHash, AttemptedUtc FROM ManagedMessages WHERE MessageKey=$key;";
+        command.CommandText = "SELECT ChannelId, MessageId, ContentHash, AttemptedUtc, AttemptPayload FROM ManagedMessages WHERE MessageKey=$key;";
         command.Parameters.AddWithValue("$key", key);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
-            ? new ManagedMessageRecord(key, reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetString(1), reader.GetString(2), ParseUtc(reader.GetString(3))) : null;
+            ? new ManagedMessageRecord(key, reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetString(1), reader.GetString(2), ParseUtc(reader.GetString(3)), reader.IsDBNull(4) ? null : reader.GetString(4)) : null;
     }
 
     internal async Task SaveManagedMessageAsync(ManagedMessageRecord record, CancellationToken cancellationToken)
@@ -266,16 +266,29 @@ public sealed partial class JellixDatabase
         await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            INSERT INTO ManagedMessages(MessageKey, ChannelId, MessageId, ContentHash, AttemptedUtc)
-            VALUES($key, $channel, $message, $hash, $attempt)
-            ON CONFLICT(MessageKey) DO UPDATE SET ChannelId=$channel, MessageId=$message, ContentHash=$hash, AttemptedUtc=$attempt;
+            INSERT INTO ManagedMessages(MessageKey, ChannelId, MessageId, ContentHash, AttemptedUtc, AttemptPayload)
+            VALUES($key, $channel, $message, $hash, $attempt, $payload)
+            ON CONFLICT(MessageKey) DO UPDATE SET ChannelId=$channel, MessageId=$message, ContentHash=$hash, AttemptedUtc=$attempt, AttemptPayload=$payload;
             """;
         command.Parameters.AddWithValue("$key", record.Key);
         command.Parameters.AddWithValue("$channel", record.ChannelId);
         command.Parameters.AddWithValue("$message", (object?)record.MessageId ?? DBNull.Value);
         command.Parameters.AddWithValue("$hash", record.ContentHash);
         command.Parameters.AddWithValue("$attempt", FormatUtc(record.AttemptedUtc));
+        command.Parameters.AddWithValue("$payload", (object?)record.AttemptPayload ?? DBNull.Value);
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    internal async Task<IReadOnlyList<ManagedMessageRecord>> ListManagedMessagesAsync(CancellationToken cancellationToken)
+    {
+        var result = new List<ManagedMessageRecord>();
+        await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT MessageKey, ChannelId, MessageId, ContentHash, AttemptedUtc, AttemptPayload FROM ManagedMessages;";
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            result.Add(new ManagedMessageRecord(reader.GetString(0), reader.GetString(1), reader.IsDBNull(2) ? null : reader.GetString(2), reader.GetString(3), ParseUtc(reader.GetString(4)), reader.IsDBNull(5) ? null : reader.GetString(5)));
+        return result;
     }
 
     internal async Task CompleteManagedNotificationAsync(NotificationJob job, CancellationToken cancellationToken)

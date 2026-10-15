@@ -41,7 +41,7 @@ public sealed partial class DiscordBotService : BackgroundService
     private readonly JellixDatabase _database;
     private readonly AccountLinkService _linkService;
     private readonly PasswordTicketService _passwordTickets;
-    private readonly MediaForgeBridgeClient _mediaForge;
+    private readonly H0melabBridgeClient _h0melab;
     private readonly IUserManager _userManager;
     private readonly ILibraryManager _libraryManager;
     private readonly LibraryCatalog _catalog;
@@ -68,7 +68,7 @@ public sealed partial class DiscordBotService : BackgroundService
         JellixDatabase database,
         AccountLinkService linkService,
         PasswordTicketService passwordTickets,
-        MediaForgeBridgeClient mediaForge,
+        H0melabBridgeClient h0melab,
         IUserManager userManager,
         ILibraryManager libraryManager,
         LibraryCatalog catalog,
@@ -80,7 +80,7 @@ public sealed partial class DiscordBotService : BackgroundService
         _database = database;
         _linkService = linkService;
         _passwordTickets = passwordTickets;
-        _mediaForge = mediaForge;
+        _h0melab = h0melab;
         _userManager = userManager;
         _libraryManager = libraryManager;
         _catalog = catalog;
@@ -203,6 +203,7 @@ public sealed partial class DiscordBotService : BackgroundService
     public override void Dispose()
     {
         _accessDecisionLock.Dispose();
+        _managedMessageLock.Dispose();
         foreach (var value in _stickyRefreshLocks.Values) value.Dispose();
         _client.Dispose();
         base.Dispose();
@@ -276,6 +277,9 @@ public sealed partial class DiscordBotService : BackgroundService
             LogDiscordWarning(_logger, "sticky restoration failed", exception);
         }
 
+        try { await RepairLegacyLibraryFootersAsync().ConfigureAwait(false); }
+        catch (Exception exception) { LogDiscordWarning(_logger, "library footer migration failed", exception); }
+
         try
         {
             await _database.SetBotStateAsync("discord-ready-utc", DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture), CancellationToken.None).ConfigureAwait(false);
@@ -320,9 +324,9 @@ public sealed partial class DiscordBotService : BackgroundService
             }
         }
 
-        var commands = BuildCommands(_mediaForge.IsAvailable);
+        var commands = BuildCommands(_h0melab.IsAvailable);
         var expectedNames = commands.Select(value => value.Name.Value).OrderBy(value => value, StringComparer.Ordinal).ToArray();
-        var schema = "schema-v3|" + typeof(Plugin).Assembly.GetName().Version + "|" + string.Join('|', expectedNames) + "|" + config.Language + "|" + config.MediaForgeEnabled + "|" + _mediaForge.IsAvailable;
+        var schema = "schema-v4|" + typeof(Plugin).Assembly.GetName().Version + "|" + string.Join('|', expectedNames) + "|" + config.Language + "|" + config.H0melabEnabled + "|" + _h0melab.IsAvailable;
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(schema)));
         var existingHash = await _database.GetBotStateAsync("command-schema-hash", cancellationToken).ConfigureAwait(false);
         var existing = await guild.GetApplicationCommandsAsync().ConfigureAwait(false);
@@ -374,12 +378,12 @@ public sealed partial class DiscordBotService : BackgroundService
         if (config.PasswordChangeEnabled && !PasswordTicketService.IsPublicUrlConfigured(config.JellyfinPublicUrl)) issues.Add("Öffentliche Jellyfin-URL fehlt oder ist unsicher.");
         if (config.AccessRequestsEnabled && !config.PasswordChangeEnabled) issues.Add("Zugangsanfragen benötigen die Passwortänderung.");
         if (config.AccessRequestsEnabled && guild.OwnerId == 0) issues.Add("Discord-Server-Owner konnte nicht ermittelt werden.");
-        if (config.MediaForgeEnabled && !_mediaForge.IsAvailable) issues.Add("MediaForge-Jellix-Brücke fehlt.");
+        if (config.H0melabEnabled && !_h0melab.IsAvailable) issues.Add("H0melab-Connector-Jellix-Brücke fehlt (AniWorld Requests installieren und Jellyfin neu starten).");
         _configurationIssues = issues.ToArray();
         foreach (var issue in issues) LogDiscordWarning(_logger, issue, null);
     }
 
-    private static List<ApplicationCommandProperties> BuildCommands(bool mediaForgeAvailable)
+    private static List<ApplicationCommandProperties> BuildCommands(bool h0melabAvailable)
     {
         var commands = new List<ApplicationCommandProperties>();
         static SlashCommandBuilder Slash(string de, string en, string deDescription, string enDescription)
@@ -413,9 +417,9 @@ public sealed partial class DiscordBotService : BackgroundService
             .AddOption(new SlashCommandOptionBuilder().WithName(DiscordText.Command("aktion", "action")).WithDescription(DiscordText.T("Aktion", "Action")).WithType(ApplicationCommandOptionType.String).WithRequired(true)
                 .AddChoice(DiscordText.T("Entfernen", "Remove"), "remove").AddChoice("Status", "status").AddChoice(DiscordText.T("Aktualisieren", "Refresh"), "refresh")).Build());
 
-        if (Plugin.Instance?.Configuration.MediaForgeEnabled == true && mediaForgeAvailable)
+        if (Plugin.Instance?.Configuration.H0melabEnabled == true && h0melabAvailable)
         {
-            commands.Add(Slash("anfragen", "requests", "Deine MediaForge-Anfragen", "Your MediaForge requests").Build());
+            commands.Add(Slash("anfragen", "requests", "Deine H0melab-Anfragen", "Your H0melab requests").Build());
             commands.Add(Slash("film-anfrage", "request-movie", "Einen Film anfragen", "Request a movie")
                 .AddOption(DiscordText.Command("suche", "query"), ApplicationCommandOptionType.String, DiscordText.T("Titel des Films", "Movie title"), isRequired: true, minLength: 2, maxLength: 120).Build());
             commands.Add(Slash("serien-anfrage", "request-series", "Eine Serie anfragen", "Request a series")
@@ -504,7 +508,7 @@ public sealed partial class DiscordBotService : BackgroundService
             .WithButton(DiscordText.T("🔑 Passwort ändern", "🔑 Change password"), "account:password", disabled: Plugin.Instance?.Configuration.PasswordChangeEnabled != true || !PasswordTicketService.IsPublicUrlConfigured())
             .WithButton(DiscordText.T("📊 Statistiken", "📊 Statistics"), "account:stats", disabled: Plugin.Instance?.Configuration.StatisticsEnabled != true)
             .WithButton(DiscordText.T("📺 Weiterschauen", "📺 Continue watching"), "account:continue")
-            .WithButton(DiscordText.T("📋 Anfragen", "📋 Requests"), "account:requests", disabled: Plugin.Instance?.Configuration.MediaForgeEnabled != true || !_mediaForge.IsAvailable)
+            .WithButton(DiscordText.T("📋 Anfragen", "📋 Requests"), "account:requests", disabled: Plugin.Instance?.Configuration.H0melabEnabled != true || !_h0melab.IsAvailable)
             .WithButton(DiscordText.T("🏆 Erfolge", "🏆 Achievements"), "account:achievements", disabled: Plugin.Instance?.Configuration.AchievementsEnabled != true, row: 1)
             .WithButton(DiscordText.T("🔒 Datenschutz", "🔒 Privacy"), "account:privacy", row: 1)
             .WithButton(DiscordText.T("🔗 Verbindung lösen", "🔗 Unlink"), "account:unlink", ButtonStyle.Danger, row: 1)
@@ -789,7 +793,7 @@ public sealed partial class DiscordBotService : BackgroundService
                 .AppendLine($"RAM: {process.WorkingSet64 / 1024 / 1024:N0} MB")
                 .AppendLine($"Transcodes: {_sessionManager.Sessions.Count(value => value.TranscodingInfo is not null)}")
                 .AppendLine($"Discord: {(_client.ConnectionState == ConnectionState.Connected ? "OK" : "Offline")}")
-                .AppendLine($"MediaForge: {(_mediaForge.IsAvailable ? "OK" : DiscordText.T("Nicht verfügbar", "Unavailable"))}")
+                .AppendLine($"H0melab: {(_h0melab.IsAvailable ? "OK" : DiscordText.T("Nicht verfügbar", "Unavailable"))}")
                 .AppendLine(DiscordText.T("Datenbank: OK", "Database: OK"))
                 .AppendLine($"Queue: {await _database.GetPendingNotificationCountAsync(CancellationToken.None).ConfigureAwait(false)}");
         }
@@ -832,9 +836,9 @@ public sealed partial class DiscordBotService : BackgroundService
             {
                 embedBuilder.AddField(DiscordText.T("🚪 Zugang", "🚪 Access"), DiscordText.T("`/jellyfin-zugang name` – Zugang beantragen", "`/jellyfin-access name` – request access"), true);
             }
-            if (config?.MediaForgeEnabled == true && _mediaForge.IsAvailable)
+            if (config?.H0melabEnabled == true && _h0melab.IsAvailable)
             {
-                embedBuilder.AddField("🎬 MediaForge", DiscordText.T("`/film-anfrage suche`\n`/serien-anfrage suche`\n`/anfragen`", "`/request-movie query`\n`/request-series query`\n`/requests`"), true);
+                embedBuilder.AddField("🎬 H0melab Downloader", DiscordText.T("`/film-anfrage suche`\n`/serien-anfrage suche`\n`/anfragen`", "`/request-movie query`\n`/request-series query`\n`/requests`"), true);
             }
         }
 
@@ -934,13 +938,13 @@ public sealed partial class DiscordBotService : BackgroundService
         try
         {
             var user = _userManager.GetUserById(link.JellyfinUserId);
-            using var response = await _mediaForge.InvokeAsync("list", link.JellyfinUserId, user?.Username ?? "unknown", null, CancellationToken.None).ConfigureAwait(false);
+            using var response = await _h0melab.InvokeAsync("list", link.JellyfinUserId, user?.Username ?? "unknown", null, CancellationToken.None).ConfigureAwait(false);
             var items = response.RootElement.TryGetProperty("items", out var array) && array.ValueKind == JsonValueKind.Array ? array.EnumerateArray().Take(20).ToArray() : [];
             var lines = items.Select(FormatRequest).ToArray();
             var embed = BuildRequestsEmbed(lines);
             await command.ModifyOriginalResponseAsync(properties => properties.Embed = embed).ConfigureAwait(false);
         }
-        catch (Exception exception) when (exception is MediaForgeBridgeException or MediaForgeBridgeUnavailableException)
+        catch (Exception exception) when (exception is H0melabBridgeException or H0melabBridgeUnavailableException)
         {
             await command.ModifyOriginalResponseAsync(properties => properties.Content = DiscordText.Error(exception.Message)).ConfigureAwait(false);
         }
@@ -956,7 +960,7 @@ public sealed partial class DiscordBotService : BackgroundService
         try
         {
             var user = _userManager.GetUserById(link.JellyfinUserId);
-            using var response = await _mediaForge.InvokeAsync("search", link.JellyfinUserId, user?.Username ?? "unknown", new { query, mediaType }, CancellationToken.None).ConfigureAwait(false);
+            using var response = await _h0melab.InvokeAsync("search", link.JellyfinUserId, user?.Username ?? "unknown", new { query, mediaType }, CancellationToken.None).ConfigureAwait(false);
             var items = response.RootElement.TryGetProperty("items", out var array) && array.ValueKind == JsonValueKind.Array ? array.EnumerateArray().Take(25).ToArray() : [];
             if (items.Length == 0)
             {
@@ -964,20 +968,20 @@ public sealed partial class DiscordBotService : BackgroundService
                 return;
             }
 
-            var menu = new SelectMenuBuilder().WithCustomId("mediaforge:select").WithPlaceholder(DiscordText.T("Titel auswählen", "Select a title"));
+            var menu = new SelectMenuBuilder().WithCustomId("h0melab:select").WithPlaceholder(DiscordText.T("Titel auswählen", "Select a title"));
             foreach (var item in items)
             {
                 if (!item.TryGetProperty("token", out var tokenValue) || tokenValue.ValueKind != JsonValueKind.String
                     || !item.TryGetProperty("title", out var titleValue) || titleValue.ValueKind != JsonValueKind.String) continue;
                 var token = tokenValue.GetString() ?? string.Empty;
-                var title = titleValue.GetString() ?? "MediaForge";
+                var title = titleValue.GetString() ?? "H0melab Downloader";
                 var year = item.TryGetProperty("year", out var yearValue) ? yearValue.ToString() : string.Empty;
                 if (token.Length is > 0 and <= 100) menu.AddOption(Limit(title, 100), token, year.Length > 0 ? Limit(year, 100) : null);
             }
 
             if (menu.Options.Count == 0)
             {
-                await command.ModifyOriginalResponseAsync(properties => properties.Content = DiscordText.T("MediaForge hat keine gültigen Ergebnisse geliefert.", "MediaForge returned no valid results.")).ConfigureAwait(false);
+                await command.ModifyOriginalResponseAsync(properties => properties.Content = DiscordText.T("H0melab hat keine gültigen Ergebnisse geliefert.", "H0melab returned no valid results.")).ConfigureAwait(false);
                 return;
             }
 
@@ -987,7 +991,7 @@ public sealed partial class DiscordBotService : BackgroundService
                 properties.Components = new ComponentBuilder().WithSelectMenu(menu).Build();
             }).ConfigureAwait(false);
         }
-        catch (Exception exception) when (exception is MediaForgeBridgeException or MediaForgeBridgeUnavailableException)
+        catch (Exception exception) when (exception is H0melabBridgeException or H0melabBridgeUnavailableException)
         {
             await command.ModifyOriginalResponseAsync(properties => properties.Content = DiscordText.Error(exception.Message)).ConfigureAwait(false);
         }
@@ -1053,17 +1057,18 @@ public sealed partial class DiscordBotService : BackgroundService
         }
         else if (action == "requests")
         {
+            if (!RequireRequestAccess(component)) return;
             await component.DeferAsync(ephemeral: true).ConfigureAwait(false);
             try
             {
                 var user = _userManager.GetUserById(link.JellyfinUserId);
-                using var response = await _mediaForge.InvokeAsync("list", link.JellyfinUserId, user?.Username ?? "unknown", null, CancellationToken.None).ConfigureAwait(false);
+                using var response = await _h0melab.InvokeAsync("list", link.JellyfinUserId, user?.Username ?? "unknown", null, CancellationToken.None).ConfigureAwait(false);
                 var items = response.RootElement.TryGetProperty("items", out var array) && array.ValueKind == JsonValueKind.Array ? array.EnumerateArray().Take(20).ToArray() : [];
                 var lines = items.Select(FormatRequest).ToArray();
                 var embed = BuildRequestsEmbed(lines);
                 await component.ModifyOriginalResponseAsync(properties => properties.Embed = embed).ConfigureAwait(false);
             }
-            catch (Exception exception) when (exception is MediaForgeBridgeException or MediaForgeBridgeUnavailableException)
+            catch (Exception exception) when (exception is H0melabBridgeException or H0melabBridgeUnavailableException)
             {
                 await component.ModifyOriginalResponseAsync(properties => properties.Content = DiscordText.Error(exception.Message)).ConfigureAwait(false);
             }
@@ -1345,7 +1350,7 @@ public sealed partial class DiscordBotService : BackgroundService
     {
         if (!RequireConfiguredGuild(component)) return;
         if (!AllowInteraction(component, "select", 15)) return;
-        if (component.Data.CustomId != "mediaforge:select" || component.Data.Values.Count == 0)
+        if (component.Data.CustomId != "h0melab:select" || component.Data.Values.Count == 0)
         {
             await component.RespondAsync(DiscordText.T("Diese Auswahl ist nicht mehr gültig.", "This selection is no longer valid."), ephemeral: true).ConfigureAwait(false);
             return;
@@ -1357,14 +1362,14 @@ public sealed partial class DiscordBotService : BackgroundService
         try
         {
             var user = _userManager.GetUserById(link.JellyfinUserId);
-            using var response = await _mediaForge.InvokeAsync("submit", link.JellyfinUserId, user?.Username ?? "unknown", new { selectionToken = component.Data.Values.First() }, CancellationToken.None).ConfigureAwait(false);
+            using var response = await _h0melab.InvokeAsync("submit", link.JellyfinUserId, user?.Username ?? "unknown", new { selectionToken = component.Data.Values.First() }, CancellationToken.None).ConfigureAwait(false);
             var title = response.RootElement.TryGetProperty("title", out var titleValue) && titleValue.ValueKind == JsonValueKind.String ? titleValue.GetString() : null;
             var status = response.RootElement.TryGetProperty("status", out var statusValue) && statusValue.ValueKind == JsonValueKind.String ? statusValue.GetString() : "pending";
             var requestId = response.RootElement.TryGetProperty("id", out var idValue) ? Limit(idValue.ToString(), 128) : "unknown";
-            await TryWriteAuditAsync("discord-user", link.DiscordUserId, "request-submitted", "mediaforge-request", requestId, title ?? string.Empty).ConfigureAwait(false);
-            await component.ModifyOriginalResponseAsync(properties => { properties.Content = $"✅ **{Escape(Limit(title ?? "MediaForge", 180))}** – {Escape(Limit(status ?? "pending", 64))}"; properties.Components = new ComponentBuilder().Build(); }).ConfigureAwait(false);
+            await TryWriteAuditAsync("discord-user", link.DiscordUserId, "request-submitted", "h0melab-request", requestId, title ?? string.Empty).ConfigureAwait(false);
+            await component.ModifyOriginalResponseAsync(properties => { properties.Content = $"✅ **{Escape(Limit(title ?? "H0melab Downloader", 180))}** – {RequestStatusLabel(status ?? "pending")}"; properties.Components = new ComponentBuilder().Build(); }).ConfigureAwait(false);
         }
-        catch (Exception exception) when (exception is MediaForgeBridgeException or MediaForgeBridgeUnavailableException)
+        catch (Exception exception) when (exception is H0melabBridgeException or H0melabBridgeUnavailableException)
         {
             await component.ModifyOriginalResponseAsync(properties => properties.Content = DiscordText.Error(exception.Message)).ConfigureAwait(false);
         }
@@ -1711,7 +1716,7 @@ public sealed partial class DiscordBotService : BackgroundService
     }
 
     internal static bool ShouldSuppressPersonalRequest(string kind, string? mode, string destination)
-        => kind == "mediaforge-request"
+        => kind is "h0melab-request" or "mediaforge-request"
             && (mode is null or "off" || !destination.StartsWith("dm:", StringComparison.Ordinal));
 
     private async Task<UserLink?> RequireLinkAsync(IDiscordInteraction interaction)
@@ -1738,6 +1743,11 @@ public sealed partial class DiscordBotService : BackgroundService
 
     private static bool RequireRequestAccess(IDiscordInteraction interaction)
     {
+        if (Plugin.Instance?.Configuration.H0melabEnabled != true)
+        {
+            ObserveResponse(interaction.RespondAsync(DiscordText.T("H0melab-Anfragen sind deaktiviert.", "H0melab requests are disabled."), ephemeral: true));
+            return false;
+        }
         if (!RequireStreamingRole(interaction)) return false;
         return RequireRole(interaction, Plugin.Instance?.Configuration.RequestRoleId, DiscordText.T("Du darfst keine Anfragen erstellen.", "You may not create requests."));
     }
@@ -1912,30 +1922,34 @@ public sealed partial class DiscordBotService : BackgroundService
 
     private static string FormatRequest(JsonElement item)
     {
-        var title = item.TryGetProperty("title", out var titleValue) && titleValue.ValueKind == JsonValueKind.String ? titleValue.GetString() ?? "MediaForge" : "MediaForge";
+        var title = item.TryGetProperty("title", out var titleValue) && titleValue.ValueKind == JsonValueKind.String ? titleValue.GetString() ?? "H0melab Downloader" : "H0melab Downloader";
         var status = item.TryGetProperty("status", out var statusValue) && statusValue.ValueKind == JsonValueKind.String ? statusValue.GetString() ?? "pending" : "pending";
         status = Limit(status.ToLowerInvariant(), 64);
         var progress = item.TryGetProperty("progress", out var progressValue) && progressValue.TryGetInt32(out var number) ? $" – {Math.Clamp(number, 0, 100)}%" : string.Empty;
         var icon = status switch { "available" => "🟢", "completed" => "🟢", "queued" => "🔵", "downloading" => "🔵", "rejected" => "🔴", "failed" => "🔴", _ => "🟡" };
-        var label = status switch
+        var label = RequestStatusLabel(status);
+        return $"{icon} **{Escape(Limit(title, 160))}**\n{Escape(Limit(label, 100))}{progress}";
+    }
+
+    internal static string RequestStatusLabel(string status)
+        => status switch
         {
-            "available" or "completed" => DiscordText.T("Verfügbar", "Available"),
+            "available" or "completed" => DiscordText.T("Download abgeschlossen", "Download completed"),
             "downloading" => DiscordText.T("Wird heruntergeladen", "Downloading"),
             "queued" => DiscordText.T("In Warteschlange", "Queued"),
             "rejected" => DiscordText.T("Abgelehnt", "Rejected"),
             "failed" => DiscordText.T("Fehlgeschlagen", "Failed"),
             "pending" or "processing" => DiscordText.T("Wartet auf Freigabe", "Waiting for approval"),
-            _ => status,
+            "withdrawn" => DiscordText.T("Zurückgezogen", "Withdrawn"),
+            _ => Escape(Limit(status, 64)),
         };
-        return $"{icon} **{Escape(Limit(title, 160))}**\n{Escape(Limit(label, 100))}{progress}";
-    }
 
     private static Embed BuildRequestsEmbed(string[] lines)
         => JellixEmbeds.Create(
-                "📋 " + DiscordText.T("Deine MediaForge-Anfragen", "Your MediaForge requests"),
+                "📋 " + DiscordText.T("Deine H0melab-Anfragen", "Your H0melab requests"),
                 lines.Length == 0 ? DiscordText.T("Noch keine Anfragen vorhanden.", "No requests found yet.") : JoinWithinLimit(lines, "\n\n", 4096),
                 JellixEmbeds.Secondary,
-                DiscordText.T("Status direkt aus MediaForge", "Status directly from MediaForge"))
+                DiscordText.T("Status direkt aus dem H0melab-Connector", "Status directly from the H0melab connector"))
             .Build();
 
     private static string PeriodLabel(string period)
@@ -1962,7 +1976,7 @@ public sealed partial class DiscordBotService : BackgroundService
         {
             "achievement" => DiscordText.T("Jellix Achievement", "Jellix achievement"),
             "library" => DiscordText.T("Neu in deiner Jellyfin-Bibliothek", "New in your Jellyfin library"),
-            "mediaforge-request" => "Jellix • MediaForge",
+            "h0melab-request" => "Jellix • H0melab Downloader",
             "admin-alert" => DiscordText.T("Jellix Systemwarnung", "Jellix system alert"),
             _ => DiscordText.T("Jellix für Jellyfin", "Jellix for Jellyfin"),
         };

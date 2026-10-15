@@ -1,6 +1,6 @@
 # Jellix for Jellyfin
 
-Jellix connects Jellyfin with Discord. It provides secure account tools, persistent playback statistics, achievements, recommendations, notifications, sticky messages, onboarding, administration features, and an optional MediaForge request integration.
+Jellix connects Jellyfin with Discord. It provides secure account tools, persistent playback statistics, achievements, recommendations, notifications, sticky messages, onboarding, administration features, and optional H0melab Downloader requests through its Jellyfin connector.
 
 For every Discord command, option, permission, visibility rule, and the complete sticky workflow, see the [command guide](COMMANDS.md).
 
@@ -9,7 +9,7 @@ For every Discord command, option, permission, visibility rule, and the complete
 - Jellyfin 12.0 or newer (use a 0.2.x release for Jellyfin 10.11)
 - A Discord application with a bot
 - HTTPS access to Jellyfin if password-change links are enabled outside the local machine
-- MediaForge Requests 0.5.0 or newer for the optional request integration
+- H0melab Downloader 2.1.1 and its Jellyfin connector (AniWorld Requests 1.3.2 or newer) for the optional request integration
 
 ## Dependencies
 
@@ -34,7 +34,7 @@ Building Jellix from source requires the .NET 10 SDK. PowerShell 7 is used by th
 
 ### Discord account menu
 
-The `/account` command opens a private dashboard with buttons for password changes, personal statistics, Continue Watching, MediaForge requests, achievements, privacy settings, and account unlinking.
+The `/account` command opens a private dashboard with buttons for password changes, personal statistics, Continue Watching, H0melab requests, achievements, privacy settings, and account unlinking.
 
 ### Playback statistics
 
@@ -84,18 +84,19 @@ The `/account` command opens a private dashboard with buttons for password chang
 - Link the new account automatically and optionally assign the streaming role.
 - Deliver a secure, single-use password setup link to the new user.
 
-### MediaForge integration
+### H0melab Downloader integration
 
-- Detect the optional MediaForge bridge without making MediaForge a required dependency.
+- Detect the optional H0melab connector bridge without making the connector a required dependency.
 - Search for movies and series through Discord.
 - Submit opaque, short-lived, user-bound selection tokens.
 - Display personal request status and download progress.
-- Notify the requesting Discord user by direct message when a request becomes available, fails, or is rejected; personal results are never redirected to a public channel.
-- Detect MediaForge availability and invalid API-key states.
-- Keep MediaForge's `RequestStore` as the only source of truth. Jellix never reads or modifies `requests.json` and does not maintain a second request database.
-- Isolate MediaForge initialization, timeout, response, and compatibility failures from Jellyfin and the Discord bot.
+- Notify the requesting Discord user by direct message when a download completes, fails, or is rejected; personal results are never redirected to a public channel. Completion alone does not prove that Jellyfin has indexed the content.
+- Detect H0melab availability and invalid API-key states through the connector.
+- Keep the connector's `RequestStore` as the only source of truth. Jellix never reads or modifies `requests.json` and does not maintain a second request database.
+- Use the connector's current approval/direct-download mode, sources, request limits, maintenance mode and download defaults. Jellix has no separate approval policy or downloader API key. Approve pending requests in the existing connector administration page.
+- Isolate connector initialization, timeout, response, and compatibility failures from Jellyfin and the Discord bot.
 
-The integration requires the protocol-v1 Jellix bridge included with MediaForge Requests 0.5.0 or newer. Install or update both plugins and restart Jellyfin before enabling it.
+The integration discovers `Jellyfin.Plugin.AniWorld.Integration.JellixBridge` (protocol v1). Install **AniWorld Requests 1.3.2+**, keep the downloader URL/API key and policy configured there, then install **Jellix 0.5.0** and restart Jellyfin. Enable **H0melab-Connector-Integration** in Jellix. Existing integration-enable/poll settings migrate through XML aliases; the former MediaForge bridge is no longer called. Old unsent MediaForge results are retired, not mapped to unrelated H0melab IDs. Use separate Discord applications if the downloader's native bot also runs, to avoid command-registration conflicts.
 
 ### Library notifications
 
@@ -152,7 +153,7 @@ Example overview:
 - View account links, diagnostics, configuration warnings, queue size, and the audit log.
 - Provide public and administrator-specific help commands.
 - Show restricted public status information and additional system details to administrators.
-- Warn administrators about Discord disconnects, MediaForge failures, invalid MediaForge API keys, failed downloads, failed library scans, and available Jellyfin updates.
+- Warn administrators about Discord disconnects, H0melab failures, invalid H0melab API keys, failed downloads, failed library scans, and available Jellyfin updates.
 - Deliver administrator alerts, including available Jellyfin updates, either by direct message to the Discord server owner or to a configured channel.
 - Retain and prune audit records according to the configured retention period.
 - Deliver background notifications through a persistent priority queue with retries and deduplication.
@@ -171,7 +172,7 @@ Every release includes a separate PowerShell watchdog. It runs outside Jellyfin 
 6. Grant **View Channels**, **Send Messages**, **Embed Links**, **Attach Files**, and **Read Message History**. Stickies additionally require **Manage Messages**. Automatic role assignment requires **Manage Roles**, with the bot role above the assigned role.
 7. Open **Jellyfin Dashboard → Plugins → Jellix** and configure the bot token, Discord server ID, roles, channels, language, and desired features.
 8. Configure the public Jellyfin URL when password changes or Discord onboarding are enabled.
-9. Restart Jellyfin after changing the bot token, Discord server, language, or MediaForge installation.
+9. Restart Jellyfin after changing the bot token, Discord server, language, or H0melab connector installation.
 
 On Jellyfin 12, Jellix registers a native **Discord** link in Jellyfin Web's
 `config.json`. Jellyfin renders it in the Modern desktop app bar, the overflow
@@ -195,7 +196,7 @@ Manual account assignment does not require the Discord bot to be online. It requ
 
 Pushing a version tag such as `v0.1.0` starts the GitHub Actions release workflow. It validates locked dependencies, audits packages, builds with warnings treated as errors, runs regression tests, creates the plugin and watchdog archives, publishes a GitHub release, and updates the Jellyfin repository manifest on GitHub Pages.
 
-Release **0.4.0** uses tag **`v0.4.0`**, four-part plugin/assembly version **`0.4.0.0`**, and the unchanged Jellyfin ABI **`12.0.0.0`**. `version.json`, the project version fields and `meta.json` must agree. A normal branch push alone does not run the release workflow; the version tag does. No release tag or push is performed by the local implementation.
+Release **0.5.0** uses tag **`v0.5.0`**, four-part plugin/assembly version **`0.5.0.0`**, and the unchanged Jellyfin ABI **`12.0.0.0`**. `version.json`, the project version fields and `meta.json` must agree. A normal branch push alone does not run the release workflow; the version tag does. No release tag or push is performed by the local implementation. See [migration and rollback](CHANGELOG.md).
 
 Before upgrading, stop Jellyfin and save the previous plugin directory, plugin configuration and a consistent Jellix database backup (include the WAL/SHM files if they still exist). Version 0.4 adds schema 6 tables without deleting links or playback history. Test in a separate Discord channel, including a restart and a slow multi-season import, before enabling public announcements. A downgrade must use a matching pre-upgrade backup: older versions do not understand the managed-message queue. Restoring a backup also restores its point-in-time links and playback state; retain newer data before choosing that recovery path.
 
@@ -203,7 +204,7 @@ Before upgrading, stop Jellyfin and save the previous plugin directory, plugin c
 
 Planned areas for future development include:
 
-- Live end-to-end validation with additional Jellyfin, Discord, and MediaForge installations
+- Live end-to-end validation with additional Jellyfin, Discord, and H0melab installations
 - Top movies, genres, devices, monthly summaries, and yearly statistics recaps
 - Additional configurable achievements and custom thresholds
 - More recommendation filters and improved recommendation history
@@ -212,7 +213,7 @@ Planned areas for future development include:
 - More automated migration, concurrency, and large-library performance tests
 - Accessibility improvements and continued German and English translation review
 
-Roadmap items are plans, not guarantees, and may change as Jellyfin, Discord, and MediaForge evolve.
+Roadmap items are plans, not guarantees, and may change as Jellyfin, Discord, and H0melab evolve.
 
 ## License
 

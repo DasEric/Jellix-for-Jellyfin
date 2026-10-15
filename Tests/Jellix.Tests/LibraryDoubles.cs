@@ -43,8 +43,13 @@ internal sealed class MemoryManagedTransport : IManagedMessageTransport
     public Task<bool> ExistsAsync(string id, string key, CancellationToken cancellationToken)
         => Task.FromResult(Messages.TryGetValue(id, out var message) && message.Key == key);
 
-    public Task<string?> FindAsync(string key, DateTime sinceUtc, CancellationToken cancellationToken)
-        => Task.FromResult<string?>(Messages.FirstOrDefault(pair => pair.Value.Key == key).Key);
+    internal string? RecoveryPayload { get; private set; }
+
+    public Task<string?> FindAsync(string key, string? attemptedPayload, DateTime sinceUtc, CancellationToken cancellationToken)
+    {
+        RecoveryPayload = attemptedPayload;
+        return Task.FromResult<string?>(Messages.FirstOrDefault(pair => pair.Value.Key == key).Key);
+    }
 
     public Task<string> CreateAsync(string key, string payload, CancellationToken cancellationToken)
     {

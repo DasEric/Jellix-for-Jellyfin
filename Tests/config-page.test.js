@@ -67,7 +67,7 @@ global.ApiClient = {
   ajax: async function (request) {
     if (request.url.includes('Admin/Token')) return { Configured: true };
     if (request.url.includes('Admin/Diagnostics')) {
-      return { DiscordReady: false, MediaForgeInstalled: false, PendingNotifications: 0, ConfigurationIssues: [], MediaLibraries: [{ Name: 'Series', Id: '11111111111111111111111111111111' }] };
+      return { DiscordReady: false, H0melabInstalled: true, H0melabBridgeAvailable: true, H0melabVersion: '1.3.2', PendingNotifications: 0, ConfigurationIssues: [], MediaLibraries: [{ Name: 'Series', Id: '11111111111111111111111111111111' }] };
     }
     if (request.url.includes('Admin/Links')) {
       return [{ GuildId: '123456789012345678', DiscordUserId: '223456789012345678', JellyfinUserId: '11111111111111111111111111111111' }];
@@ -96,6 +96,9 @@ setTimeout(async function () {
     throw new Error('Library defaults or selection hints are missing.');
   }
   element('LibraryOverviewEnabled').checked = true;
+  element('H0melabEnabled').checked = true;
+  element('H0melabPollSeconds').value = 90;
+  if (!element('jellixStatus').textContent.includes('H0melab-Connector: bereit (1.3.2)')) throw new Error('Connector diagnostics are missing.');
   element('LibraryOverviewChannelId').value = '123456789012345678';
   element('LibraryIds').value = '11111111111111111111111111111111';
   element('MediaStoragePaths').value = '/media/movies\n/media/series';
@@ -103,6 +106,7 @@ setTimeout(async function () {
   if (lastAlert || !savedConfiguration?.LibraryOverviewEnabled || savedConfiguration.SeriesQuietSeconds !== 120 || savedConfiguration.MediaStoragePaths !== '/media/movies\n/media/series') {
     throw new Error('Library settings were not saved correctly: ' + lastAlert);
   }
+  if (!savedConfiguration.H0melabEnabled || savedConfiguration.H0melabPollSeconds !== 90) throw new Error('H0melab configuration was not saved.');
   savedConfiguration = null;
   element('LibraryOverviewEnabled').checked = true;
   element('LibraryOverviewChannelId').value = '';

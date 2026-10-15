@@ -27,7 +27,11 @@ var tests = new (string Name, Func<Task> Run)[]
     ("database preserves one-to-one links and state", TestDatabaseAsync),
     ("database migrates legacy playback data", TestDatabaseMigrationAsync),
     ("playback accounting ignores pauses and seeks", TestPlaybackAsync),
-    ("broken optional MediaForge bridge stays isolated", TestMediaForgeIsolationAsync),
+    ("broken optional H0melab bridge stays isolated", TestH0melabIsolationAsync),
+    ("H0melab bridge preserves protocol user and connector decisions", TestH0melabContractAsync),
+    ("legacy connector configuration migrates without conflicting JSON aliases", TestH0melabConfigurationAsync),
+    ("managed footers are readable and recover exact legacy or pending snapshots", TestManagedFootersAsync),
+    ("schema six retains message IDs and upgrades unchanged snapshots in place", TestManagedUpgradeAsync),
     ("request results always resolve to requester DM", TestRequestDestinationAsync),
     ("library counts real episodes and versions", TestLibraryCountingAsync),
     ("series ingestion groups five seasons and late arrivals", TestSeriesPipelineAsync),
@@ -300,7 +304,9 @@ static async Task TestDatabaseMigrationAsync()
         verify.CommandText = "SELECT CompletedUtc IS NOT NULL FROM NotificationOutbox WHERE DedupeKey LIKE '%:orphan:available';";
         verify.Parameters.Clear();
         Equal(1L, Convert.ToInt64(await verify.ExecuteScalarAsync().ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture));
-        verify.CommandText = "SELECT COUNT(*) FROM SchemaMigrations WHERE Version=6;";
+        verify.CommandText = "SELECT COUNT(*) FROM NotificationOutbox WHERE Kind='mediaforge-request' AND CompletedUtc IS NULL;";
+        Equal(0L, Convert.ToInt64(await verify.ExecuteScalarAsync().ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture));
+        verify.CommandText = "SELECT COUNT(*) FROM SchemaMigrations WHERE Version=7;";
         Equal(1L, Convert.ToInt64(await verify.ExecuteScalarAsync().ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture));
     }
     finally
@@ -310,11 +316,108 @@ static async Task TestDatabaseMigrationAsync()
     }
 }
 
-static Task TestMediaForgeIsolationAsync()
+static Task TestH0melabIsolationAsync()
 {
-    var bridge = new MediaForgeBridgeClient(new Jellyfin.Plugin.MediaForge.Integration.ThrowingServiceProvider());
+    var bridge = new H0melabBridgeClient(new Jellyfin.Plugin.AniWorld.Integration.ThrowingServiceProvider());
     False(bridge.IsAvailable);
     return Task.CompletedTask;
+}
+
+static async Task TestH0melabContractAsync()
+{
+    var connector = new Jellyfin.Plugin.AniWorld.Integration.JellixBridge();
+    var bridge = new H0melabBridgeClient(new Jellyfin.Plugin.AniWorld.Integration.BridgeServiceProvider(connector));
+    True(bridge.IsAvailable);
+    var user = Guid.NewGuid();
+    foreach (var status in new[] { "pending", "queued", "downloading", "failed" })
+    {
+        connector.Result = JsonSerializer.Serialize(new { id = 17, title = "Example", status });
+        using var response = await bridge.InvokeAsync("submit", user, "User", new { selectionToken = "opaque" }, CancellationToken.None).ConfigureAwait(false);
+        Equal(status, response.RootElement.GetProperty("status").GetString());
+        Equal(("1", "submit", user.ToString("N"), "{\"selectionToken\":\"opaque\"}"), connector.LastCall);
+    }
+    True(DiscordBotService.RequestStatusLabel("pending").Contains("Freigabe", StringComparison.Ordinal));
+    True(DiscordBotService.RequestStatusLabel("queued").Contains("Warteschlange", StringComparison.Ordinal));
+    connector.Failure = new InvalidOperationException("secret API key and upstream body");
+    try
+    {
+        using var unexpected = await bridge.InvokeAsync("list", user, "User", null, CancellationToken.None).ConfigureAwait(false);
+        throw new InvalidOperationException("Expected bridge rejection.");
+    }
+    catch (H0melabBridgeException exception) { False(exception.ToString().Contains("secret API", StringComparison.Ordinal)); }
+}
+
+static Task TestH0melabConfigurationAsync()
+{
+    var serializer = new System.Xml.Serialization.XmlSerializer(typeof(PluginConfiguration));
+    using var input = new StringReader("<PluginConfiguration><MediaForgeEnabled>true</MediaForgeEnabled><MediaForgePollSeconds>90</MediaForgePollSeconds></PluginConfiguration>");
+    using var reader = System.Xml.XmlReader.Create(input, new System.Xml.XmlReaderSettings { DtdProcessing = System.Xml.DtdProcessing.Prohibit, XmlResolver = null });
+    var config = (PluginConfiguration)serializer.Deserialize(reader)!;
+    True(config.H0melabEnabled); Equal(90, config.H0melabPollSeconds);
+    var json = JsonSerializer.Serialize(config);
+    False(json.Contains("MediaForge", StringComparison.Ordinal));
+    False(Newtonsoft.Json.JsonConvert.SerializeObject(config).Contains("MediaForge", StringComparison.Ordinal));
+    using var output = new StringWriter();
+    serializer.Serialize(output, config);
+    using var roundTrip = new StringReader(output.ToString());
+    using var roundTripReader = System.Xml.XmlReader.Create(roundTrip, new System.Xml.XmlReaderSettings { DtdProcessing = System.Xml.DtdProcessing.Prohibit, XmlResolver = null });
+    True(((PluginConfiguration)serializer.Deserialize(roundTripReader)!).H0melabEnabled);
+    return Task.CompletedTask;
+}
+
+static Task TestManagedFootersAsync()
+{
+    const string payload = "{\"title\":\"Library\",\"description\":\"66 movies\"}";
+    var footer = DiscordBotService.LibraryFooter("overview:123:456");
+    False(footer.Contains("123", StringComparison.Ordinal));
+    False(footer.Contains("overview:", StringComparison.Ordinal));
+    True(DiscordBotService.IsManagedLibraryFooter(footer));
+    var embed = JellixEmbeds.Create("Library", "66 movies", footer: footer).Build();
+    True(DiscordBotService.MatchesManagedSnapshot(embed, "overview:123:456", payload));
+    False(DiscordBotService.MatchesManagedSnapshot(embed, "overview:123:456", null));
+    False(DiscordBotService.MatchesManagedSnapshot(embed, "series:test", payload));
+    False(DiscordBotService.MatchesManagedSnapshot(embed, "overview:123:456", "{\"title\":\"Library\",\"description\":\"67 movies\"}"));
+    var legacy = JellixEmbeds.Create("Old", footer: "Jellix · overview:123:456").Build();
+    True(DiscordBotService.MatchesManagedSnapshot(legacy, "overview:123:456", null));
+    False(DiscordBotService.MatchesManagedSnapshot(legacy, "overview:123:789", null));
+    var repaired = DiscordBotService.RepairLibraryFooter(legacy, "overview:123:456");
+    Equal(legacy.Title, repaired.Title); Equal(legacy.Timestamp, repaired.Timestamp);
+    Equal(footer, repaired.Footer?.Text);
+    Equal(legacy.Footer?.Text, DiscordBotService.RepairLibraryFooter(legacy, "overview:other").Footer?.Text);
+    return Task.CompletedTask;
+}
+
+static async Task TestManagedUpgradeAsync()
+{
+    var path = TempDirectory();
+    const string payload = "legacy snapshot";
+    try
+    {
+        await using (var connection = new SqliteConnection($"Data Source={Path.Combine(path, "jellix.db")}"))
+        {
+            await connection.OpenAsync().ConfigureAwait(false);
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                CREATE TABLE ManagedMessages(MessageKey TEXT PRIMARY KEY, ChannelId TEXT NOT NULL, MessageId TEXT NULL, ContentHash TEXT NOT NULL DEFAULT '', AttemptedUtc TEXT NOT NULL);
+                INSERT INTO ManagedMessages VALUES('overview:123:456', '456', '42', $hash, $utc);
+                """;
+            command.Parameters.AddWithValue("$hash", LibraryMedia.Hash(payload));
+            command.Parameters.AddWithValue("$utc", DateTime.UtcNow.ToString("O"));
+            await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
+        using var database = new JellixDatabase(path);
+        var before = (await database.ListManagedMessagesAsync(CancellationToken.None).ConfigureAwait(false)).Single();
+        Equal("42", before.MessageId); Equal<string?>(null, before.AttemptPayload);
+        var transport = new MemoryManagedTransport();
+        transport.Messages["42"] = (before.Key, payload);
+        await new ManagedMessagePublisher(database).PublishAsync(before.Key, "456", payload, transport, CancellationToken.None).ConfigureAwait(false);
+        Equal(0, transport.Creates); Equal(1, transport.Updates);
+        var after = (await database.GetManagedMessageAsync(before.Key, CancellationToken.None).ConfigureAwait(false))!;
+        Equal("42", after.MessageId); NotEqual(before.ContentHash, after.ContentHash);
+        await new ManagedMessagePublisher(database).PublishAsync(before.Key, "456", payload, transport, CancellationToken.None).ConfigureAwait(false);
+        Equal(1, transport.Updates);
+    }
+    finally { SqliteConnection.ClearAllPools(); Directory.Delete(path, true); }
 }
 
 static Task TestWebConfigMenuLinkAsync()
@@ -372,9 +475,12 @@ static Task TestWebConfigMenuLinkAsync()
 static Task TestRequestDestinationAsync()
 {
     var link = new UserLink("guild", "223456789012345678", Guid.NewGuid(), DateTime.UtcNow, "test");
-    Equal<string?>(null, MediaForgeMonitoringService.ResolveRequestDestination(link, "off"));
-    Equal("dm:223456789012345678", MediaForgeMonitoringService.ResolveRequestDestination(link, "dm"));
-    Equal("dm:223456789012345678", MediaForgeMonitoringService.ResolveRequestDestination(link, "channel"));
+    Equal<string?>(null, H0melabMonitoringService.ResolveRequestDestination(link, "off"));
+    Equal("dm:223456789012345678", H0melabMonitoringService.ResolveRequestDestination(link, "dm"));
+    Equal("dm:223456789012345678", H0melabMonitoringService.ResolveRequestDestination(link, "channel"));
+    True(DiscordBotService.ShouldSuppressPersonalRequest("h0melab-request", "off", "dm:223456789012345678"));
+    True(DiscordBotService.ShouldSuppressPersonalRequest("h0melab-request", "dm", "channel:123456789012345678"));
+    False(DiscordBotService.ShouldSuppressPersonalRequest("h0melab-request", "dm", "dm:223456789012345678"));
     True(DiscordBotService.ShouldSuppressPersonalRequest("mediaforge-request", "off", "dm:223456789012345678"));
     True(DiscordBotService.ShouldSuppressPersonalRequest("mediaforge-request", "dm", "channel:123456789012345678"));
     False(DiscordBotService.ShouldSuppressPersonalRequest("mediaforge-request", "dm", "dm:223456789012345678"));
@@ -643,10 +749,13 @@ static async Task TestManagedDeliveryAsync()
         Equal(1, transport.Creates);
         // A new publisher represents a process restart after an uncertain send.
         publisher = new ManagedMessagePublisher(database);
-        await publisher.PublishAsync("series:test", "123", "first", transport, CancellationToken.None).ConfigureAwait(false);
+        Equal("first", (await database.GetManagedMessageAsync("series:test", CancellationToken.None).ConfigureAwait(false))!.AttemptPayload);
+        await publisher.PublishAsync("series:test", "123", "latest", transport, CancellationToken.None).ConfigureAwait(false);
+        Equal("first", transport.RecoveryPayload);
+        Equal("latest", transport.Messages.Single().Value.Payload);
         Equal(1, transport.Creates); Equal(1, transport.Messages.Count);
         var updates = transport.Updates;
-        await publisher.PublishAsync("series:test", "123", "first", transport, CancellationToken.None).ConfigureAwait(false);
+        await publisher.PublishAsync("series:test", "123", "latest", transport, CancellationToken.None).ConfigureAwait(false);
         Equal(updates, transport.Updates);
         await publisher.PublishAsync("series:test", "123", "second", transport, CancellationToken.None).ConfigureAwait(false);
         Equal(1, transport.Creates); Equal(updates + 1, transport.Updates);

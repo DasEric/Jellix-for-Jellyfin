@@ -4,16 +4,16 @@ using System.Text.Json;
 namespace Jellyfin.Plugin.Jellix.Integrations;
 
 /// <summary>
-/// Optional versioned bridge to MediaForge Requests. The bridge deliberately
+/// Optional versioned bridge to the H0melab Jellyfin connector. The bridge deliberately
 /// avoids reading the connector's request file or creating a second request store.
 /// </summary>
-public sealed class MediaForgeBridgeClient
+public sealed class H0melabBridgeClient
 {
     public const string ProtocolVersion = "1";
-    private const string BridgeTypeName = "Jellyfin.Plugin.MediaForge.Integration.JellixBridge";
+    private const string BridgeTypeName = "Jellyfin.Plugin.AniWorld.Integration.JellixBridge";
     private readonly IServiceProvider _services;
 
-    public MediaForgeBridgeClient(IServiceProvider services)
+    public H0melabBridgeClient(IServiceProvider services)
     {
         _services = services;
     }
@@ -44,18 +44,18 @@ public sealed class MediaForgeBridgeClient
         MethodInfo method;
         try
         {
-            type = FindBridgeType() ?? throw new MediaForgeBridgeUnavailableException("The installed MediaForge connector does not provide the Jellix bridge.");
-            instance = _services.GetService(type) ?? throw new MediaForgeBridgeUnavailableException("The MediaForge Jellix bridge is not registered.");
+            type = FindBridgeType() ?? throw new H0melabBridgeUnavailableException("The installed H0melab connector does not provide the Jellix bridge.");
+            instance = _services.GetService(type) ?? throw new H0melabBridgeUnavailableException("The H0melab Jellix bridge is not registered.");
             method = type.GetMethod("InvokeAsync", BindingFlags.Instance | BindingFlags.Public, [typeof(string), typeof(string), typeof(string), typeof(string), typeof(string), typeof(CancellationToken)])
-                ?? throw new MediaForgeBridgeUnavailableException("The MediaForge Jellix bridge has an incompatible API.");
+                ?? throw new H0melabBridgeUnavailableException("The H0melab Jellix bridge has an incompatible API.");
         }
-        catch (MediaForgeBridgeUnavailableException)
+        catch (H0melabBridgeUnavailableException)
         {
             throw;
         }
         catch (Exception)
         {
-            throw new MediaForgeBridgeUnavailableException("The MediaForge Jellix bridge could not be initialized.");
+            throw new H0melabBridgeUnavailableException("The H0melab Jellix bridge could not be initialized.");
         }
         var payloadJson = JsonSerializer.Serialize(payload ?? new { });
         object? invoked;
@@ -67,9 +67,7 @@ public sealed class MediaForgeBridgeClient
         {
             // The connector owns error sanitization. Do not retain its internal
             // exception because it could contain an upstream response or secret.
-            throw new MediaForgeBridgeException(Plugin.Instance?.Configuration.Language == "en"
-                ? "MediaForge rejected the operation."
-                : "MediaForge hat die Aktion abgelehnt.");
+            throw Rejected();
         }
 
         try
@@ -78,9 +76,9 @@ public sealed class MediaForgeBridgeClient
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            throw new MediaForgeBridgeException(Plugin.Instance?.Configuration.Language == "en"
-                ? "MediaForge did not respond in time."
-                : "MediaForge hat nicht rechtzeitig geantwortet.");
+            throw new H0melabBridgeException(Plugin.Instance?.Configuration.Language == "en"
+                ? "The H0melab connector did not respond in time."
+                : "Der H0melab-Connector hat nicht rechtzeitig geantwortet.");
         }
     }
 
@@ -88,7 +86,7 @@ public sealed class MediaForgeBridgeClient
     {
         if (invoked is not Task task)
         {
-            throw new MediaForgeBridgeUnavailableException("The MediaForge Jellix bridge returned an invalid task.");
+            throw new H0melabBridgeUnavailableException("The H0melab Jellix bridge returned an invalid task.");
         }
 
         try
@@ -98,7 +96,7 @@ public sealed class MediaForgeBridgeClient
             var json = resultProperty?.GetValue(task) as string;
             if (string.IsNullOrWhiteSpace(json) || json.Length > 2 * 1024 * 1024)
             {
-                throw new MediaForgeBridgeException("MediaForge returned an invalid response.");
+                throw new H0melabBridgeException("The H0melab connector returned an invalid response.");
             }
 
             return JsonDocument.Parse(json, new JsonDocumentOptions { MaxDepth = 32 });
@@ -107,17 +105,20 @@ public sealed class MediaForgeBridgeClient
         {
             throw;
         }
-        catch (MediaForgeBridgeException)
+        catch (H0melabBridgeException)
         {
             throw;
         }
         catch (Exception)
         {
-            throw new MediaForgeBridgeException(Plugin.Instance?.Configuration.Language == "en"
-                ? "MediaForge rejected the operation."
-                : "MediaForge hat die Aktion abgelehnt.");
+            throw Rejected();
         }
     }
+
+    private static H0melabBridgeException Rejected()
+        => new(Plugin.Instance?.Configuration.Language == "en"
+            ? "The H0melab connector rejected the operation. Check the connector settings and request status."
+            : "Der H0melab-Connector hat die Aktion abgelehnt. Bitte Connector-Einstellungen und Anfragestatus prüfen.");
 
     private static Type? FindBridgeType()
         => AppDomain.CurrentDomain.GetAssemblies()
@@ -126,17 +127,17 @@ public sealed class MediaForgeBridgeClient
             .FirstOrDefault(type => type is not null);
 }
 
-public sealed class MediaForgeBridgeUnavailableException : Exception
+public sealed class H0melabBridgeUnavailableException : Exception
 {
-    public MediaForgeBridgeUnavailableException(string message)
+    public H0melabBridgeUnavailableException(string message)
         : base(message)
     {
     }
 }
 
-public sealed class MediaForgeBridgeException : Exception
+public sealed class H0melabBridgeException : Exception
 {
-    public MediaForgeBridgeException(string message)
+    public H0melabBridgeException(string message)
         : base(message)
     {
     }

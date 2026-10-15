@@ -2,7 +2,7 @@
   <div data-role="content">
     <div class="content-primary">
       <h2>Jellix</h2>
-      <p>Discord-Bot für Konten, Statistiken und optionale MediaForge-Anfragen.</p>
+      <p>Discord-Bot für Konten, Statistiken und optionale H0melab-Downloader-Anfragen.</p>
       <div id="jellixStatus" class="paperList" style="padding:1em;margin:1em 0"></div>
 
       <form id="jellixConfigForm">
@@ -41,9 +41,10 @@
         <div class="inputContainer"><label class="inputLabel" for="AchievementChannelId">Achievement-Kanal-ID</label><input is="emby-input" id="AchievementChannelId" inputmode="numeric"></div>
         <div class="inputContainer"><label class="inputLabel" for="TimeZoneId">Zeitzone</label><input is="emby-input" id="TimeZoneId" placeholder="Europe/Berlin"><div class="fieldDescription">Leer = Zeitzone des Jellyfin-Servers.</div></div>
 
-        <h3>MediaForge</h3>
-        <div class="checkboxContainer"><label><input is="emby-checkbox" id="MediaForgeEnabled" type="checkbox"><span>MediaForge-Integration aktivieren</span></label></div>
-        <div class="inputContainer"><label class="inputLabel" for="MediaForgePollSeconds">Statusintervall (Sekunden)</label><input is="emby-input" id="MediaForgePollSeconds" type="number" min="15" max="3600"></div>
+        <h3>H0melab Downloader</h3>
+        <div class="checkboxContainer"><label><input is="emby-checkbox" id="H0melabEnabled" type="checkbox"><span>H0melab-Connector-Integration aktivieren</span></label></div>
+        <p>Benötigt den Jellyfin-Connector „AniWorld Requests“ ab 1.3.2. URL, API-Key, Quellen, Sprache, Provider, Benutzerlimits und Admin-Freigabe/Direktdownload werden ausschließlich dort eingestellt. Jellix übergibt Anfragen an denselben Connector und umgeht keine Freigabe. Nach der Installation Jellyfin neu starten.</p>
+        <div class="inputContainer"><label class="inputLabel" for="H0melabPollSeconds">Statusintervall (Sekunden)</label><input is="emby-input" id="H0melabPollSeconds" type="number" min="15" max="3600"></div>
         <div class="selectContainer"><label class="selectLabel" for="RequestNotificationMode">Anfrage-Benachrichtigungen</label><select is="emby-select" id="RequestNotificationMode"><option value="off">Aus</option><option value="dm">Direktnachricht an anfragenden Benutzer</option></select><div class="fieldDescription">Persönliche Anfrageergebnisse werden aus Datenschutzgründen nie in einen öffentlichen Kanal umgeleitet.</div></div>
 
         <h3>Bibliothek und Anzeige</h3>

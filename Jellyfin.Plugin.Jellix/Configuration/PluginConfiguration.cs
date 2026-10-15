@@ -55,9 +55,18 @@ public sealed class PluginConfiguration : BasePluginConfiguration
 
     public string AchievementNotificationMode { get; set; } = "dm";
 
-    public bool MediaForgeEnabled { get; set; }
+    public bool H0melabEnabled { get; set; }
 
-    public int MediaForgePollSeconds { get; set; } = 60;
+    public int H0melabPollSeconds { get; set; } = 60;
+
+    // Serialization aliases retain existing settings, but never activate the old bridge.
+    [System.Text.Json.Serialization.JsonIgnore]
+    [Newtonsoft.Json.JsonIgnore]
+    public bool MediaForgeEnabled { get => H0melabEnabled; set => H0melabEnabled = value; }
+
+    [System.Text.Json.Serialization.JsonIgnore]
+    [Newtonsoft.Json.JsonIgnore]
+    public int MediaForgePollSeconds { get => H0melabPollSeconds; set => H0melabPollSeconds = value; }
 
     public string RequestNotificationMode { get; set; } = "dm";
 

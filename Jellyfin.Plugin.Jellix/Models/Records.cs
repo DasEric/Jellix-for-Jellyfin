@@ -112,6 +112,6 @@ public sealed record SeriesBatch(string Id, string SeriesKey, Guid SeriesId, str
 
 public sealed record SeriesBatchMember(string Identity, Guid ItemId, int? EpisodeNumber);
 
-public sealed record ManagedMessageRecord(string Key, string ChannelId, string? MessageId, string ContentHash, DateTime AttemptedUtc);
+public sealed record ManagedMessageRecord(string Key, string ChannelId, string? MessageId, string ContentHash, DateTime AttemptedUtc, string? AttemptPayload = null);
 
 public sealed record StorageUsage(string Label, long? TotalBytes, long? FreeBytes, string? Error);

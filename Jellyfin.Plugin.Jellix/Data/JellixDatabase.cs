@@ -7,7 +7,7 @@ namespace Jellyfin.Plugin.Jellix.Data;
 /// <summary>Transactional persistent state owned by Jellix.</summary>
 public sealed partial class JellixDatabase : IDisposable
 {
-    private const int CurrentSchemaVersion = 6;
+    private const int CurrentSchemaVersion = 7;
     private readonly string _connectionString;
     private readonly string _databasePath;
     private readonly SemaphoreSlim _migrationLock = new(1, 1);
@@ -62,6 +62,9 @@ public sealed partial class JellixDatabase : IDisposable
             await ExecuteAsync(connection, "INSERT OR IGNORE INTO PlaybackSegments(SessionKey, CumulativeWatchSeconds, EventUtc, WatchSeconds) SELECT SessionKey, ActualWatchSeconds, LastEventUtc, ActualWatchSeconds FROM PlaybackSessions WHERE ActualWatchSeconds>0;", cancellationToken).ConfigureAwait(false);
             await MigrateLegacyMediaForgeDestinationsAsync(connection, cancellationToken).ConfigureAwait(false);
             await ExecuteAsync(connection, LibraryStateSchema, cancellationToken).ConfigureAwait(false);
+            await EnsureColumnAsync(connection, "ManagedMessages", "AttemptPayload", "TEXT NULL", cancellationToken).ConfigureAwait(false);
+            // Old connector IDs are unrelated to H0melab IDs. Never replay old results as new requests.
+            await ExecuteAsync(connection, "UPDATE NotificationOutbox SET CompletedUtc=COALESCE(CompletedUtc, strftime('%Y-%m-%dT%H:%M:%fZ','now')), LastError='Retired MediaForge integration.' WHERE Kind='mediaforge-request' AND CompletedUtc IS NULL;", cancellationToken).ConfigureAwait(false);
             await MigrateLibraryOutboxAsync(connection, cancellationToken).ConfigureAwait(false);
 
             await using var version = connection.CreateCommand();
