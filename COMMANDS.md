@@ -19,9 +19,11 @@ Normal results such as help, statistics, achievements, recommendations, leaderbo
 | `/random` | `/zufall` | Recommends a random movie or series. | Public. Optional type, genre, unseen-only, maximum runtime, and minimum rating filters. |
 | `/jellyfin-access name:Eric` | `/jellyfin-zugang name:Eric` | Requests a new Jellyfin account. | Private acknowledgement. The Discord server owner reviews the request by DM. |
 | `/unlock-account` | `/konto-entsperren` | Clears failed-login lockout attempts for the linked Jellyfin account. | Private. Must be enabled by an administrator. |
-| `/status` | `/status` | Shows Jellyfin availability, stream count, and library totals. | Public for users. Administrators receive private technical details. |
+| `/status` | `/status` | Shows Jellyfin availability, stream count, movies, and series (total local episodes) from the configured library selection. | Public for users. Administrators receive private technical details. |
 
 The server administrator can require a configured streaming role for general user commands. Leaving that role empty allows everyone to use them. Account-specific actions still require a Discord-to-Jellyfin link.
+
+The optional **Library overview** is a persistent channel embed configured in the Jellyfin Jellix dashboard, not a slash command. It also shows used/total/free media storage and edits the same message instead of reposting it. TV announcements likewise summarize actual new episodes by series and update late arrivals in place during the configured merge window. Neither type of dynamic message can be converted into a static `/sticky` snapshot.
 
 ## MediaForge commands
 

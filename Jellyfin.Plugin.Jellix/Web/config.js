@@ -2,9 +2,9 @@
   'use strict';
   const pluginId = 'bea64f51-00f3-4535-8fd3-88bcd2785f24';
   const page = document.querySelector('#JellixConfigPage');
-  const booleans = ['BotEnabled','SelfLinkEnabled','PasswordChangeEnabled','RevokeSessionsAfterPasswordChange','UnlockAccountEnabled','UserPageEnabled','StatisticsEnabled','LeaderboardEnabled','AchievementsEnabled','AchievementFilmFanEnabled','AchievementCineasteEnabled','AchievementSeriesJunkieEnabled','AchievementNightOwlEnabled','AchievementBingeWatcherEnabled','AchievementNoLifeEnabled','MediaForgeEnabled','NewMediaNotificationsEnabled','NewEpisodeNotificationsEnabled','NowPlayingShowUsernames','RandomEnabled','AccessRequestsEnabled','AssignStreamingRoleAfterApproval','StickyEnabled','AdminAlertsEnabled','CheckJellyfinUpdates'];
-  const numbers = ['LinkCodeLifetimeMinutes','PasswordTicketLifetimeMinutes','CompletedPlaybackPercent','MediaForgePollSeconds','AccessRequestCooldownHours','StickyDebounceSeconds','HealthCheckMinutes','AuditRetentionDays'];
-  const strings = ['GuildId','JellyfinPublicUrl','Language','StreamingRoleId','RequestRoleId','AdminRoleId','AchievementChannelId','AchievementNotificationMode','TimeZoneId','RequestNotificationMode','NewMediaChannelId','NowPlayingMode','AccessRequestChannelId','AdminAlertMode','AdminAlertChannelId'];
+  const booleans = ['BotEnabled','SelfLinkEnabled','PasswordChangeEnabled','RevokeSessionsAfterPasswordChange','UnlockAccountEnabled','UserPageEnabled','StatisticsEnabled','LeaderboardEnabled','AchievementsEnabled','AchievementFilmFanEnabled','AchievementCineasteEnabled','AchievementSeriesJunkieEnabled','AchievementNightOwlEnabled','AchievementBingeWatcherEnabled','AchievementNoLifeEnabled','MediaForgeEnabled','NewMediaNotificationsEnabled','NewEpisodeNotificationsEnabled','LibraryOverviewEnabled','NowPlayingShowUsernames','RandomEnabled','AccessRequestsEnabled','AssignStreamingRoleAfterApproval','StickyEnabled','AdminAlertsEnabled','CheckJellyfinUpdates'];
+  const numbers = ['LinkCodeLifetimeMinutes','PasswordTicketLifetimeMinutes','CompletedPlaybackPercent','MediaForgePollSeconds','SeriesQuietSeconds','SeriesMergeHours','LibraryOverviewMinutes','AccessRequestCooldownHours','StickyDebounceSeconds','HealthCheckMinutes','AuditRetentionDays'];
+  const strings = ['GuildId','JellyfinPublicUrl','Language','StreamingRoleId','RequestRoleId','AdminRoleId','AchievementChannelId','AchievementNotificationMode','TimeZoneId','RequestNotificationMode','NewMediaChannelId','LibraryOverviewChannelId','LibraryIds','MediaStoragePaths','NowPlayingMode','AccessRequestChannelId','AdminAlertMode','AdminAlertChannelId'];
   let users = [];
 
   function loading(value) {
@@ -71,11 +71,16 @@
       ]);
       const config = results[0];
       booleans.forEach(function (key) { page.querySelector('#' + key).checked = !!config[key]; });
-      numbers.forEach(function (key) { page.querySelector('#' + key).value = config[key]; });
+      const defaults = { SeriesQuietSeconds: 120, SeriesMergeHours: 24, LibraryOverviewMinutes: 5 };
+      numbers.forEach(function (key) { page.querySelector('#' + key).value = config[key] === undefined ? (defaults[key] || '') : config[key]; });
       strings.forEach(function (key) { page.querySelector('#' + key).value = config[key] || ''; });
       page.querySelector('#DiscordToken').placeholder = field(results[1], ['configured', 'Configured'], false) ? 'Gespeichert' : 'Noch nicht gesetzt';
       users = (Array.isArray(results[5]) ? results[5] : []).map(normalizeUser).filter(Boolean);
       renderStatus(results[2]);
+      const libraries = field(results[2], ['mediaLibraries', 'MediaLibraries'], []);
+      page.querySelector('#jellixLibraries').textContent = Array.isArray(libraries) ? libraries.map(function (library) {
+        return String(field(library, ['name', 'Name'], '')) + ': ' + String(field(library, ['id', 'Id'], ''));
+      }).join(' · ') : '';
       renderUsers();
       renderLinks(results[3]);
       renderAudit(results[4]);
@@ -159,6 +164,11 @@
       strings.forEach(function (key) { config[key] = page.querySelector('#' + key).value.trim(); });
       validateSnowflake(config.GuildId, 'Discord-Server-ID', config.BotEnabled);
       ['StreamingRoleId','RequestRoleId','AdminRoleId','AchievementChannelId','NewMediaChannelId','AccessRequestChannelId','AdminAlertChannelId'].forEach(function (key) { validateSnowflake(config[key], key, false); });
+      validateSnowflake(config.LibraryOverviewChannelId, 'Bibliotheksübersicht-Kanal-ID', config.LibraryOverviewEnabled);
+      validateSnowflake(config.NewMediaChannelId, 'Neuigkeiten-Kanal-ID', config.NewMediaNotificationsEnabled || config.NewEpisodeNotificationsEnabled);
+      if (config.LibraryIds.split(',').filter(function (id) { return id.trim(); }).some(function (id) { return !/^(?:[a-f\d]{32}|[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12})$/i.test(id.trim()); })) {
+        throw new Error('Bibliotheks-IDs müssen kommagetrennte Jellyfin-GUIDs sein.');
+      }
       validatePublicUrl(config.JellyfinPublicUrl);
       const token = page.querySelector('#DiscordToken').value.trim();
       const result = await ApiClient.updatePluginConfiguration(pluginId, config);

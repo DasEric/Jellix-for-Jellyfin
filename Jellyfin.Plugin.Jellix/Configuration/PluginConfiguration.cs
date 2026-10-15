@@ -69,6 +69,22 @@ public sealed class PluginConfiguration : BasePluginConfiguration
 
     public string NewMediaChannelId { get; set; } = string.Empty;
 
+    public int SeriesQuietSeconds { get; set; } = 120;
+
+    public int SeriesMergeHours { get; set; } = 24;
+
+    public bool LibraryOverviewEnabled { get; set; }
+
+    public string LibraryOverviewChannelId { get; set; } = string.Empty;
+
+    public int LibraryOverviewMinutes { get; set; } = 5;
+
+    /// <summary>Comma-separated Jellyfin library IDs; empty selects all movie/TV/mixed libraries.</summary>
+    public string LibraryIds { get; set; } = string.Empty;
+
+    /// <summary>Optional newline-separated storage paths, as visible inside the Jellyfin process.</summary>
+    public string MediaStoragePaths { get; set; } = string.Empty;
+
     public string NowPlayingMode { get; set; } = "admin";
 
     public bool NowPlayingShowUsernames { get; set; }

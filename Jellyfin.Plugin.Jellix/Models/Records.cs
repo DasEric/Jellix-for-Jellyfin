@@ -105,3 +105,13 @@ public sealed record NotificationJob(
     string DedupeKey,
     int Attempts,
     DateTime AvailableUtc);
+
+public sealed record LibraryCounts(long Movies, long Series, long Episodes);
+
+public sealed record SeriesBatch(string Id, string SeriesKey, Guid SeriesId, string ChannelId, DateTime CreatedUtc, DateTime LastAddedUtc, int Revision);
+
+public sealed record SeriesBatchMember(string Identity, Guid ItemId, int? EpisodeNumber);
+
+public sealed record ManagedMessageRecord(string Key, string ChannelId, string? MessageId, string ContentHash, DateTime AttemptedUtc);
+
+public sealed record StorageUsage(string Label, long? TotalBytes, long? FreeBytes, string? Error);

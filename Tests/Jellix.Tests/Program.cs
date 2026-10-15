@@ -1,4 +1,7 @@
 using System.Text;
+using System.Text.Json;
+using Jellix.Tests;
+using Jellyfin.Plugin.Jellix.Configuration;
 using Jellyfin.Plugin.Jellix.Data;
 using Jellyfin.Plugin.Jellix.Discord;
 using Jellyfin.Plugin.Jellix.Helpers;
@@ -7,6 +10,10 @@ using Jellyfin.Plugin.Jellix.Models;
 using Jellyfin.Plugin.Jellix.Security;
 using Jellyfin.Plugin.Jellix.Services;
 using MediaBrowser.Controller.Entities.TV;
+using MediaBrowser.Controller.Entities;
+using MediaBrowser.Controller.Entities.Movies;
+using MediaBrowser.Model.Entities;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Data.Sqlite;
 
 SQLitePCL.Batteries_V2.Init();
@@ -22,7 +29,21 @@ var tests = new (string Name, Func<Task> Run)[]
     ("playback accounting ignores pauses and seeks", TestPlaybackAsync),
     ("broken optional MediaForge bridge stays isolated", TestMediaForgeIsolationAsync),
     ("request results always resolve to requester DM", TestRequestDestinationAsync),
-    ("library batches suppress child episode spam", TestLibraryHierarchyAsync),
+    ("library counts real episodes and versions", TestLibraryCountingAsync),
+    ("series ingestion groups five seasons and late arrivals", TestSeriesPipelineAsync),
+    ("initial baseline handles remote items without replay", TestInitialLibraryBaselineAsync),
+    ("episode positions prevent duplicate split and combined imports", TestEpisodePositionImportsAsync),
+    ("upgrade recovers children of a pending legacy series", TestPendingParentUpgradeAsync),
+    ("series batches persist across restart and split after inactivity", TestSeriesPersistenceAsync),
+    ("managed delivery recovers uncertain sends and edits in place", TestManagedDeliveryAsync),
+    ("outbox does not acknowledge a newer pending revision", TestManagedRevisionAsync),
+    ("legacy library jobs migrate before delivery", TestLibraryMigrationAsync),
+    ("library recovery includes more than 1000 pending items", TestLibraryRecoveryAsync),
+    ("overview formats actual storage and episode totals", TestOverviewAsync),
+    ("storage resolves longest mount and deduplicates bind identity", TestStorageMountsAsync),
+    ("storage probes a real filesystem and handles missing paths", TestStorageProbeAsync),
+    ("library selection excludes other libraries and remote items", TestLibrarySelectionAsync),
+    ("managed messages honor channel and feature settings", TestManagedSettingsAsync),
     ("sticky ignores only its own repost", TestStickyTriggerAsync),
 };
 var failed = 0;
@@ -36,7 +57,7 @@ foreach (var test in tests)
     catch (Exception exception)
     {
         failed++;
-        Console.Error.WriteLine("FAIL " + test.Name + ": " + exception.Message);
+        Console.Error.WriteLine("FAIL " + test.Name + ": " + exception);
     }
 }
 
@@ -279,7 +300,7 @@ static async Task TestDatabaseMigrationAsync()
         verify.CommandText = "SELECT CompletedUtc IS NOT NULL FROM NotificationOutbox WHERE DedupeKey LIKE '%:orphan:available';";
         verify.Parameters.Clear();
         Equal(1L, Convert.ToInt64(await verify.ExecuteScalarAsync().ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture));
-        verify.CommandText = "SELECT COUNT(*) FROM SchemaMigrations WHERE Version=5;";
+        verify.CommandText = "SELECT COUNT(*) FROM SchemaMigrations WHERE Version=6;";
         Equal(1L, Convert.ToInt64(await verify.ExecuteScalarAsync().ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture));
     }
     finally
@@ -361,24 +382,424 @@ static Task TestRequestDestinationAsync()
     return Task.CompletedTask;
 }
 
-static Task TestLibraryHierarchyAsync()
+static Task TestLibraryCountingAsync()
 {
     var seriesId = Guid.NewGuid();
-    var seasonId = Guid.NewGuid();
-    var episode = new Episode { SeriesId = seriesId, SeasonId = seasonId };
-    var season = new Season { SeriesId = seriesId };
-    True(LibraryNotificationService.HasNewParentInBatch(episode, new HashSet<Guid> { seriesId }, new HashSet<Guid>()));
-    True(LibraryNotificationService.HasNewParentInBatch(episode, new HashSet<Guid>(), new HashSet<Guid> { seasonId }));
-    True(LibraryNotificationService.HasNewParentInBatch(season, new HashSet<Guid> { seriesId }, new HashSet<Guid>()));
-    False(LibraryNotificationService.HasNewParentInBatch(episode, new HashSet<Guid>(), new HashSet<Guid>()));
-
-    var first = new Episode { ParentId = seasonId, Name = "Episode", ParentIndexNumber = 1, IndexNumber = 1 };
-    var second = new Episode { ParentId = seasonId, Name = "Episode", ParentIndexNumber = 1, IndexNumber = 2 };
-    False(string.Equals(
-        LibraryNotificationService.BuildStableIdentity(first),
-        LibraryNotificationService.BuildStableIdentity(second),
-        StringComparison.Ordinal));
+    var root = Path.GetTempPath();
+    var one = new Episode { Id = Guid.NewGuid(), SeriesId = seriesId, Path = Path.Combine(root, "e1.mkv"), ParentIndexNumber = 1, IndexNumber = 1, IndexNumberEnd = 2 };
+    var duplicate = new Episode { Id = Guid.NewGuid(), SeriesId = seriesId, Path = Path.Combine(root, "e2.mkv"), ParentIndexNumber = 1, IndexNumber = 2 };
+    var special = new Episode { Id = Guid.NewGuid(), SeriesId = seriesId, Path = Path.Combine(root, "special.mkv"), ParentIndexNumber = 0, IndexNumber = 1 };
+    var virtualEpisode = new Episode { Id = Guid.NewGuid(), SeriesId = seriesId, Path = Path.Combine(root, "missing.mkv"), ParentIndexNumber = 2, IndexNumber = 1, IsVirtualItem = true };
+    var movie = new Movie { Id = Guid.NewGuid(), Path = Path.Combine(root, "movie.mkv") };
+    movie.ProviderIds["Tmdb"] = "123";
+    var alternate = new Movie { Id = Guid.NewGuid(), Path = Path.Combine(root, "movie-4k.mkv") };
+    alternate.ProviderIds["Tmdb"] = "123";
+    var counts = LibraryMedia.Count([one, duplicate, special, virtualEpisode, movie, alternate], _ => "series");
+    Equal(new LibraryCounts(1, 1, 3), counts);
+    Equal((3L, 1, 1), LibraryMedia.CountEpisodes([one, duplicate, special, virtualEpisode]));
+    NotEqual(LibraryMedia.EpisodeIdentity(one, "series"), LibraryMedia.EpisodeIdentity(duplicate, "series"));
+    var originalIdentity = LibraryMedia.Identity(movie);
+    movie.ProviderIds["Other"] = "later-metadata";
+    Equal(originalIdentity, LibraryMedia.Identity(movie));
+    var malformed = new Episode { Id = Guid.NewGuid(), Path = Path.Combine(root, "malformed.mkv"), ParentIndexNumber = 1, IndexNumber = int.MaxValue, IndexNumberEnd = int.MaxValue };
+    Equal(1L, LibraryMedia.CountEpisodes([malformed]).Episodes);
+    True(LibraryMedia.DescribeSeries("Specials only", [special], true).Contains("(Specials)", StringComparison.Ordinal));
     return Task.CompletedTask;
+}
+
+static async Task TestSeriesPipelineAsync()
+{
+    var path = TempDirectory();
+    try
+    {
+        using var database = new JellixDatabase(path);
+        var config = new PluginConfiguration { BotEnabled = true, NewMediaNotificationsEnabled = true, NewMediaChannelId = "123456789012345678", SeriesQuietSeconds = 120 };
+        var (library, proxy) = LibraryProxy.Create();
+        proxy.Folders.Add(new VirtualFolderInfo { ItemId = Guid.NewGuid().ToString("N"), Name = "Series", Locations = [path], CollectionType = CollectionTypeOptions.tvshows });
+        using var catalog = new LibraryCatalog(library, () => config);
+        var clock = new TestTimeProvider(DateTimeOffset.UtcNow);
+        using var service = new LibraryNotificationService(library, null!, database, catalog, null!, NullLogger<LibraryNotificationService>.Instance, () => config, clock);
+        var series = new Series { Id = Guid.NewGuid(), Name = "Testserie", Path = Path.Combine(path, "Testserie") };
+        proxy.Items[series.Id] = series;
+        var keys = new Dictionary<Guid, string>();
+        var transport = new MemoryManagedTransport();
+        var publisher = new ManagedMessagePublisher(database);
+        await service.ObserveAsync(series, keys, CancellationToken.None).ConfigureAwait(false);
+        for (var season = 1; season <= 5; season++)
+        {
+            var parent = new Season { Id = Guid.NewGuid(), SeriesId = series.Id, IndexNumber = season, Path = Path.Combine(series.Path, "Season " + season) };
+            proxy.Items[parent.Id] = parent;
+            await service.ObserveAsync(parent, keys, CancellationToken.None).ConfigureAwait(false);
+            for (var number = 1; number <= 12; number++)
+            {
+                var episode = new Episode { Id = Guid.NewGuid(), SeriesId = series.Id, SeasonId = parent.Id, ParentIndexNumber = season, IndexNumber = number, Path = Path.Combine(parent.Path, number + ".mkv") };
+                proxy.Items[episode.Id] = episode;
+                await service.ObserveAsync(episode, keys, CancellationToken.None).ConfigureAwait(false);
+                await service.ObserveAsync(episode, keys, CancellationToken.None).ConfigureAwait(false);
+            }
+            clock.Now = clock.Now.AddMinutes(10);
+            await service.FlushSeriesAsync(CancellationToken.None).ConfigureAwait(false);
+            if (season == 1)
+            {
+                var firstJob = (await database.GetNextNotificationAsync(CancellationToken.None).ConfigureAwait(false))!;
+                using var firstPayload = JsonDocument.Parse(firstJob.PayloadJson);
+                await publisher.PublishAsync(firstPayload.RootElement.GetProperty("managedKey").GetString()!, config.NewMediaChannelId, firstJob.PayloadJson, transport, CancellationToken.None).ConfigureAwait(false);
+                await database.CompleteManagedNotificationAsync(firstJob, CancellationToken.None).ConfigureAwait(false);
+            }
+        }
+        Equal(1L, await database.GetPendingNotificationCountAsync(CancellationToken.None).ConfigureAwait(false));
+        var job = (await database.GetNextNotificationAsync(CancellationToken.None).ConfigureAwait(false))!;
+        Equal("library-series", job.Kind);
+        using var payload = JsonDocument.Parse(job.PayloadJson);
+        True(payload.RootElement.GetProperty("description").GetString()!.Contains("5 Staffeln (60 Folgen)", StringComparison.Ordinal));
+        await publisher.PublishAsync(payload.RootElement.GetProperty("managedKey").GetString()!, config.NewMediaChannelId, job.PayloadJson, transport, CancellationToken.None).ConfigureAwait(false);
+        Equal(1, transport.Creates); Equal(1, transport.Updates);
+        Equal(new LibraryCounts(0, 1, 60), await catalog.GetCountsAsync(true, CancellationToken.None).ConfigureAwait(false));
+        await database.CompleteManagedNotificationAsync(job, CancellationToken.None).ConfigureAwait(false);
+        foreach (var episode in proxy.Items.Values.OfType<Episode>()) await service.ObserveAsync(episode, keys, CancellationToken.None).ConfigureAwait(false);
+        await service.FlushSeriesAsync(CancellationToken.None).ConfigureAwait(false);
+        Equal(0L, await database.GetPendingNotificationCountAsync(CancellationToken.None).ConfigureAwait(false));
+        // Episode-only mode does not require a new parent event.
+        config.NewMediaNotificationsEnabled = false;
+        config.NewEpisodeNotificationsEnabled = true;
+        var next = new Episode { Id = Guid.NewGuid(), SeriesId = series.Id, ParentIndexNumber = 5, IndexNumber = 13, Path = Path.Combine(series.Path, "late.mkv") };
+        proxy.Items[next.Id] = next;
+        await service.ObserveAsync(next, keys, CancellationToken.None).ConfigureAwait(false);
+        clock.Now = clock.Now.AddMinutes(3);
+        await service.FlushSeriesAsync(CancellationToken.None).ConfigureAwait(false);
+        var lateJob = (await database.GetNextNotificationAsync(CancellationToken.None).ConfigureAwait(false))!;
+        Equal(job.Id, lateJob.Id);
+        using var latePayload = JsonDocument.Parse(lateJob.PayloadJson);
+        True(latePayload.RootElement.GetProperty("description").GetString()!.Contains("61 Folgen", StringComparison.Ordinal));
+    }
+    finally { SqliteConnection.ClearAllPools(); Directory.Delete(path, true); }
+}
+
+static async Task TestInitialLibraryBaselineAsync()
+{
+    var path = TempDirectory();
+    try
+    {
+        using var database = new JellixDatabase(path);
+        var config = new PluginConfiguration { BotEnabled = true, NewMediaNotificationsEnabled = true, NewEpisodeNotificationsEnabled = true, NewMediaChannelId = "123456789012345678" };
+        var (library, proxy) = LibraryProxy.Create();
+        proxy.Folders.Add(new VirtualFolderInfo { ItemId = Guid.NewGuid().ToString("N"), Locations = [path] });
+        var remote = new Movie { Id = Guid.NewGuid(), Path = "https://example.invalid/remote.mkv" };
+        var local = new Movie { Id = Guid.NewGuid(), Path = Path.Combine(path, "old.mkv") };
+        proxy.Items[remote.Id] = remote; proxy.Items[local.Id] = local;
+        using var catalog = new LibraryCatalog(library, () => config);
+        using var service = new LibraryNotificationService(library, null!, database, catalog, null!, NullLogger<LibraryNotificationService>.Instance, () => config, new TestTimeProvider(DateTimeOffset.UtcNow));
+        await service.InitializeLibraryStateAsync(CancellationToken.None).ConfigureAwait(false);
+        var keys = new Dictionary<Guid, string>();
+        await service.ObserveAsync(local, keys, CancellationToken.None).ConfigureAwait(false);
+        await service.ObserveAsync(remote, keys, CancellationToken.None).ConfigureAwait(false);
+        Equal(0L, await database.GetPendingNotificationCountAsync(CancellationToken.None).ConfigureAwait(false));
+        Equal(0, (await database.ListPendingLibraryAnnouncementsAsync(CancellationToken.None).ConfigureAwait(false)).Count);
+    }
+    finally { SqliteConnection.ClearAllPools(); Directory.Delete(path, true); }
+}
+
+static async Task TestPendingParentUpgradeAsync()
+{
+    var path = TempDirectory();
+    var series = new Series { Id = Guid.NewGuid(), Name = "Legacy pending series", Path = Path.Combine(path, "series") };
+    var episode = new Episode { Id = Guid.NewGuid(), SeriesId = series.Id, ParentIndexNumber = 1, IndexNumber = 1, Path = Path.Combine(series.Path, "e1.mkv") };
+    var movie = new Movie { Id = Guid.NewGuid(), Name = "Legacy pending movie", Path = Path.Combine(path, "movie.mkv") };
+    movie.ProviderIds["Tmdb"] = "42";
+    try
+    {
+        using (var previous = new JellixDatabase(path))
+        {
+            await previous.SeedLibraryItemsAsync([series.Id, episode.Id, movie.Id], CancellationToken.None).ConfigureAwait(false);
+            await previous.SeedLibraryIdentitiesAsync([(LibraryNotificationService.BuildStableIdentity(series), series.Id), (LibraryNotificationService.BuildStableIdentity(episode), episode.Id), (LibraryNotificationService.BuildStableIdentity(movie), movie.Id)], CancellationToken.None).ConfigureAwait(false);
+            await previous.SetBotStateAsync("library-baseline-v1", DateTime.UtcNow.AddDays(-2).ToString("O"), CancellationToken.None).ConfigureAwait(false);
+            await previous.SetBotStateAsync("library-baseline-announced-v2", "1", CancellationToken.None).ConfigureAwait(false);
+            await previous.EnqueueNotificationAsync(NotificationPriority.Low, "library", "channel:123456789012345678", "{}", "library:" + LibraryNotificationService.BuildStableIdentity(series), DateTime.UtcNow, CancellationToken.None).ConfigureAwait(false);
+            await previous.EnqueueNotificationAsync(NotificationPriority.Low, "library", "channel:123456789012345678", "{}", "library:" + LibraryNotificationService.BuildStableIdentity(movie), DateTime.UtcNow, CancellationToken.None).ConfigureAwait(false);
+        }
+        await using (var connection = new SqliteConnection($"Data Source={Path.Combine(path, "jellix.db")}"))
+        {
+            await connection.OpenAsync().ConfigureAwait(false);
+            await using var command = connection.CreateCommand();
+            command.CommandText = "DELETE FROM BotState WHERE Key='library-grouped-outbox-v1';";
+            await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
+        using var database = new JellixDatabase(path);
+        var config = new PluginConfiguration { BotEnabled = true, NewMediaNotificationsEnabled = true, NewMediaChannelId = "123456789012345678" };
+        var (library, proxy) = LibraryProxy.Create();
+        proxy.Folders.Add(new VirtualFolderInfo { ItemId = Guid.NewGuid().ToString("N"), Locations = [path] });
+        proxy.Items[series.Id] = series; proxy.Items[episode.Id] = episode; proxy.Items[movie.Id] = movie;
+        using var catalog = new LibraryCatalog(library, () => config);
+        var clock = new TestTimeProvider(DateTimeOffset.UtcNow);
+        using var service = new LibraryNotificationService(library, null!, database, catalog, null!, NullLogger<LibraryNotificationService>.Instance, () => config, clock);
+        await service.InitializeLibraryStateAsync(CancellationToken.None).ConfigureAwait(false);
+        True(await database.IsLibraryItemPendingAsync(episode.Id, CancellationToken.None).ConfigureAwait(false));
+        var keys = new Dictionary<Guid, string>();
+        await service.ObserveAsync(series, keys, CancellationToken.None).ConfigureAwait(false);
+        await service.ObserveAsync(episode, keys, CancellationToken.None).ConfigureAwait(false);
+        await service.ObserveAsync(movie, keys, CancellationToken.None).ConfigureAwait(false);
+        clock.Now = clock.Now.AddMinutes(3);
+        await service.FlushSeriesAsync(CancellationToken.None).ConfigureAwait(false);
+        Equal(2L, await database.GetPendingNotificationCountAsync(CancellationToken.None).ConfigureAwait(false));
+        var recoveredMovie = (await database.GetNextNotificationAsync(CancellationToken.None).ConfigureAwait(false))!;
+        Equal("library", recoveredMovie.Kind);
+        True(recoveredMovie.DedupeKey.StartsWith("library-movie:", StringComparison.Ordinal));
+        await database.CompleteNotificationAsync(recoveredMovie.Id, CancellationToken.None).ConfigureAwait(false);
+        Equal("library-series", (await database.GetNextNotificationAsync(CancellationToken.None).ConfigureAwait(false))!.Kind);
+    }
+    finally { SqliteConnection.ClearAllPools(); Directory.Delete(path, true); }
+}
+
+static async Task TestEpisodePositionImportsAsync()
+{
+    var path = TempDirectory();
+    try
+    {
+        using var database = new JellixDatabase(path);
+        var config = new PluginConfiguration { BotEnabled = true, NewEpisodeNotificationsEnabled = true, NewMediaChannelId = "123456789012345678" };
+        var (library, proxy) = LibraryProxy.Create();
+        proxy.Folders.Add(new VirtualFolderInfo { ItemId = Guid.NewGuid().ToString("N"), Locations = [path] });
+        var series = new Series { Id = Guid.NewGuid(), Path = Path.Combine(path, "series"), Name = "Ranges" };
+        var old = new Episode { Id = Guid.NewGuid(), SeriesId = series.Id, Path = Path.Combine(series.Path, "e1-e2.mkv"), ParentIndexNumber = 1, IndexNumber = 1, IndexNumberEnd = 2 };
+        proxy.Items[series.Id] = series; proxy.Items[old.Id] = old;
+        using var catalog = new LibraryCatalog(library, () => config);
+        var clock = new TestTimeProvider(DateTimeOffset.UtcNow);
+        using var service = new LibraryNotificationService(library, null!, database, catalog, null!, NullLogger<LibraryNotificationService>.Instance, () => config, clock);
+        await service.InitializeLibraryStateAsync(CancellationToken.None).ConfigureAwait(false);
+        var keys = new Dictionary<Guid, string>();
+        var split = new Episode { Id = Guid.NewGuid(), SeriesId = series.Id, Path = Path.Combine(series.Path, "e2.mkv"), ParentIndexNumber = 1, IndexNumber = 2 };
+        proxy.Items[split.Id] = split;
+        await service.ObserveAsync(split, keys, CancellationToken.None).ConfigureAwait(false);
+        clock.Now = clock.Now.AddMinutes(3);
+        await service.FlushSeriesAsync(CancellationToken.None).ConfigureAwait(false);
+        Equal(0L, await database.GetPendingNotificationCountAsync(CancellationToken.None).ConfigureAwait(false));
+        var partlyNew = new Episode { Id = Guid.NewGuid(), SeriesId = series.Id, Path = Path.Combine(series.Path, "e2-e3.mkv"), ParentIndexNumber = 1, IndexNumber = 2, IndexNumberEnd = 3 };
+        proxy.Items[partlyNew.Id] = partlyNew;
+        await service.ObserveAsync(partlyNew, keys, CancellationToken.None).ConfigureAwait(false);
+        clock.Now = clock.Now.AddMinutes(3);
+        await service.FlushSeriesAsync(CancellationToken.None).ConfigureAwait(false);
+        var job = (await database.GetNextNotificationAsync(CancellationToken.None).ConfigureAwait(false))!;
+        using var payload = JsonDocument.Parse(job.PayloadJson);
+        True(payload.RootElement.GetProperty("description").GetString()!.Contains("1 Staffel (1 Folge)", StringComparison.Ordinal));
+        Equal(3L, (await catalog.GetCountsAsync(true, CancellationToken.None).ConfigureAwait(false)).Episodes);
+        // Recreated Jellyfin IDs must rebind the stored logical positions.
+        proxy.Items.Remove(partlyNew.Id);
+        var replacement = new Episode { Id = Guid.NewGuid(), SeriesId = series.Id, Path = partlyNew.Path, ParentIndexNumber = 1, IndexNumber = 2, IndexNumberEnd = 3 };
+        proxy.Items[replacement.Id] = replacement;
+        await service.ObserveAsync(replacement, keys, CancellationToken.None).ConfigureAwait(false);
+        var batch = (await database.ListSeriesMembersAsync(payload.RootElement.GetProperty("managedKey").GetString()!["series:".Length..], CancellationToken.None).ConfigureAwait(false)).Single();
+        Equal(replacement.Id, batch.ItemId);
+    }
+    finally { SqliteConnection.ClearAllPools(); Directory.Delete(path, true); }
+}
+
+static async Task TestSeriesPersistenceAsync()
+{
+    var path = TempDirectory();
+    var now = DateTime.UtcNow.AddHours(-4);
+    var series = Guid.NewGuid();
+    string id;
+    try
+    {
+        using (var database = new JellixDatabase(path))
+        {
+            var parent = Guid.NewGuid();
+            await database.RegisterParentTriggerAsync(parent, now.AddDays(-10), CancellationToken.None).ConfigureAwait(false);
+            True(await database.HasParentTriggerAsync(parent, Guid.Empty, now, CancellationToken.None).ConfigureAwait(false));
+            await database.ConsumeParentTriggersAsync(parent, Guid.Empty, now, CancellationToken.None).ConfigureAwait(false);
+            False(await database.HasParentTriggerAsync(parent, Guid.Empty, now.AddDays(2), CancellationToken.None).ConfigureAwait(false));
+            await database.AddSeriesMemberAsync("series", series, "123", "episode:1", Guid.NewGuid(), now, TimeSpan.FromHours(24), CancellationToken.None).ConfigureAwait(false);
+            await database.AddSeriesMemberAsync("series", series, "123", "episode:1", Guid.NewGuid(), now.AddHours(1), TimeSpan.FromHours(24), CancellationToken.None).ConfigureAwait(false);
+            var batch = (await database.ListReadySeriesBatchesAsync(now.AddMinutes(3), CancellationToken.None).ConfigureAwait(false)).Single();
+            Equal(1, batch.Revision); id = batch.Id;
+            await database.QueueSeriesBatchAsync(batch, "first", CancellationToken.None).ConfigureAwait(false);
+        }
+        using (var database = new JellixDatabase(path))
+        {
+            await database.AddSeriesMemberAsync("series", series, "123", "episode:2", Guid.NewGuid(), now.AddHours(2), TimeSpan.FromHours(24), CancellationToken.None).ConfigureAwait(false);
+            var batch = (await database.ListReadySeriesBatchesAsync(now.AddHours(3), CancellationToken.None).ConfigureAwait(false)).Single();
+            Equal(id, batch.Id); Equal(2, batch.Revision);
+            await database.QueueSeriesBatchAsync(batch, "second", CancellationToken.None).ConfigureAwait(false);
+            Equal(1L, await database.GetPendingNotificationCountAsync(CancellationToken.None).ConfigureAwait(false));
+            await database.AddSeriesMemberAsync("series", series, "123", "episode:3", Guid.NewGuid(), now.AddHours(27), TimeSpan.FromHours(24), CancellationToken.None).ConfigureAwait(false);
+            var later = (await database.ListReadySeriesBatchesAsync(now.AddHours(28), CancellationToken.None).ConfigureAwait(false)).Single();
+            NotEqual(id, later.Id);
+            Equal(1, later.Revision);
+        }
+    }
+    finally { SqliteConnection.ClearAllPools(); Directory.Delete(path, true); }
+}
+
+static async Task TestManagedDeliveryAsync()
+{
+    var path = TempDirectory();
+    try
+    {
+        using var database = new JellixDatabase(path);
+        var publisher = new ManagedMessagePublisher(database);
+        var transport = new MemoryManagedTransport { FailAfterCreate = true };
+        try { await publisher.PublishAsync("series:test", "123", "first", transport, CancellationToken.None).ConfigureAwait(false); }
+        catch (IOException) { }
+        Equal(1, transport.Creates);
+        // A new publisher represents a process restart after an uncertain send.
+        publisher = new ManagedMessagePublisher(database);
+        await publisher.PublishAsync("series:test", "123", "first", transport, CancellationToken.None).ConfigureAwait(false);
+        Equal(1, transport.Creates); Equal(1, transport.Messages.Count);
+        var updates = transport.Updates;
+        await publisher.PublishAsync("series:test", "123", "first", transport, CancellationToken.None).ConfigureAwait(false);
+        Equal(updates, transport.Updates);
+        await publisher.PublishAsync("series:test", "123", "second", transport, CancellationToken.None).ConfigureAwait(false);
+        Equal(1, transport.Creates); Equal(updates + 1, transport.Updates);
+        transport.Messages.Clear();
+        await publisher.PublishAsync("series:test", "123", "second", transport, CancellationToken.None).ConfigureAwait(false);
+        Equal(2, transport.Creates); Equal(1, transport.Messages.Count);
+    }
+    finally { SqliteConnection.ClearAllPools(); Directory.Delete(path, true); }
+}
+
+static async Task TestManagedRevisionAsync()
+{
+    var path = TempDirectory();
+    try
+    {
+        using var database = new JellixDatabase(path);
+        await database.QueueOverviewAsync("123", "old", "overview:test", CancellationToken.None).ConfigureAwait(false);
+        var old = (await database.GetNextNotificationAsync(CancellationToken.None).ConfigureAwait(false))!;
+        await database.QueueOverviewAsync("123", "new", "overview:test", CancellationToken.None).ConfigureAwait(false);
+        await database.CompleteManagedNotificationAsync(old, CancellationToken.None).ConfigureAwait(false);
+        Equal(1L, await database.GetPendingNotificationCountAsync(CancellationToken.None).ConfigureAwait(false));
+        var current = (await database.GetNextNotificationAsync(CancellationToken.None).ConfigureAwait(false))!;
+        Equal("new", current.PayloadJson);
+        await database.CompleteManagedNotificationAsync(current, CancellationToken.None).ConfigureAwait(false);
+        Equal(0L, await database.GetPendingNotificationCountAsync(CancellationToken.None).ConfigureAwait(false));
+    }
+    finally { SqliteConnection.ClearAllPools(); Directory.Delete(path, true); }
+}
+
+static async Task TestLibraryMigrationAsync()
+{
+    var path = TempDirectory();
+    var id = Guid.NewGuid();
+    try
+    {
+        using (var database = new JellixDatabase(path))
+        {
+            await database.SeedLibraryItemsAsync([id], CancellationToken.None).ConfigureAwait(false);
+            await database.SeedLibraryIdentitiesAsync([("legacy", id)], CancellationToken.None).ConfigureAwait(false);
+            await database.EnqueueNotificationAsync(NotificationPriority.Low, "library", "channel:123", "{}", "library:legacy", DateTime.UtcNow, CancellationToken.None).ConfigureAwait(false);
+        }
+        await using (var connection = new SqliteConnection($"Data Source={Path.Combine(path, "jellix.db")}"))
+        {
+            await connection.OpenAsync().ConfigureAwait(false);
+            await using var command = connection.CreateCommand();
+            command.CommandText = "DELETE FROM BotState WHERE Key='library-grouped-outbox-v1';";
+            await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
+        using (var database = new JellixDatabase(path))
+        {
+            await database.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            True(await database.IsLibraryItemPendingAsync(id, CancellationToken.None).ConfigureAwait(false));
+            True(await database.IsLibraryIdentityPendingAsync("legacy", CancellationToken.None).ConfigureAwait(false));
+            Equal(0L, await database.GetPendingNotificationCountAsync(CancellationToken.None).ConfigureAwait(false));
+        }
+    }
+    finally { SqliteConnection.ClearAllPools(); Directory.Delete(path, true); }
+}
+
+static async Task TestLibraryRecoveryAsync()
+{
+    var path = TempDirectory();
+    try
+    {
+        using var database = new JellixDatabase(path);
+        for (var index = 0; index < 1005; index++) await database.TryRegisterLibraryItemAsync(Guid.NewGuid(), DateTime.UtcNow, CancellationToken.None).ConfigureAwait(false);
+        Equal(1005, (await database.ListPendingLibraryAnnouncementsAsync(CancellationToken.None).ConfigureAwait(false)).Count);
+    }
+    finally { SqliteConnection.ClearAllPools(); Directory.Delete(path, true); }
+}
+
+static Task TestOverviewAsync()
+{
+    var text = LibraryOverviewService.Describe(new LibraryCounts(1240, 186, 12438), [new StorageUsage("Medienspeicher", 4_000_000_000_000, 3_000_000_000_000, null)], false);
+    True(text.Contains("186 Serien (12.438 Folgen insgesamt)", StringComparison.Ordinal));
+    True(text.Contains("1,00 TB von 4,00 TB belegt · 3,00 TB frei (25 %)", StringComparison.Ordinal));
+    var failure = LibraryOverviewService.Describe(new LibraryCounts(0, 0, 0), [new StorageUsage("Storage", null, null, "Storage unavailable")], true);
+    True(failure.Contains("Storage unavailable", StringComparison.Ordinal));
+    False(failure.Contains("0.00 GB", StringComparison.Ordinal));
+    return Task.CompletedTask;
+}
+
+static Task TestStorageMountsAsync()
+{
+    var root = Path.GetTempPath();
+    var media = Path.Combine(root, "media");
+    var mounts = new[] { new MediaStorageReader.Mount(root, "system", "ext4"), new MediaStorageReader.Mount(media, "media", "ext4") };
+    Equal("media", MediaStorageReader.FindMount(Path.Combine(media, "series"), mounts)!.Identity);
+    False(LibraryMedia.IsUnder(Path.Combine(root, "media-other"), media));
+    var first = MediaStorageReader.ParseMount("100 20 8:1 /films /media/films rw - ext4 /dev/sda1 rw")!;
+    var second = MediaStorageReader.ParseMount("101 20 8:1 /series /media/series rw - ext4 /dev/sda1 rw")!;
+    Equal(first.Identity, second.Identity);
+    Equal("/media/with space", MediaStorageReader.ParseMount("101 20 8:2 / /media/with\\040space rw - ext4 /dev/sdb1 rw")!.Path);
+    return Task.CompletedTask;
+}
+
+static Task TestManagedSettingsAsync()
+{
+    var config = new PluginConfiguration { BotEnabled = true, LibraryOverviewEnabled = true, LibraryOverviewChannelId = "123", NewEpisodeNotificationsEnabled = true, NewMediaChannelId = "456" };
+    True(DiscordBotService.ShouldDeliverManagedLibrary("library-overview", "channel:123", config));
+    False(DiscordBotService.ShouldDeliverManagedLibrary("library-overview", "channel:456", config));
+    True(DiscordBotService.ShouldDeliverManagedLibrary("library-series", "channel:456", config));
+    config.BotEnabled = false;
+    False(DiscordBotService.ShouldDeliverManagedLibrary("library-series", "channel:456", config));
+    True(DiscordBotService.IsManagedLibraryFooter("Jellix · overview:123:456"));
+    True(DiscordBotService.IsManagedLibraryFooter("Jellix · series:batch"));
+    False(DiscordBotService.IsManagedLibraryFooter("Jellix for Jellyfin"));
+    return Task.CompletedTask;
+}
+
+static Task TestStorageProbeAsync()
+{
+    var path = TempDirectory();
+    try
+    {
+        var reader = new MediaStorageReader();
+        var usage = reader.Read([path, Path.GetDirectoryName(path)!], false);
+        Equal(1, usage.Count);
+        var overlay = OperatingSystem.IsLinux() && File.Exists("/proc/self/mountinfo")
+            && MediaStorageReader.FindMount(path, File.ReadLines("/proc/self/mountinfo").Select(MediaStorageReader.ParseMount).OfType<MediaStorageReader.Mount>())?.Format is "overlay" or "overlayfs";
+        if (overlay) { Equal<long?>(null, usage[0].TotalBytes); True(usage[0].Error is not null); }
+        else { True(usage[0].TotalBytes > 0); True(usage[0].FreeBytes >= 0); Equal<string?>(null, usage[0].Error); }
+        var missing = reader.Read([Path.Combine(path, "not-mounted")], false).Single();
+        Equal<long?>(null, missing.TotalBytes);
+        True(missing.Error is not null);
+    }
+    finally { Directory.Delete(path, true); }
+    return Task.CompletedTask;
+}
+
+static async Task TestLibrarySelectionAsync()
+{
+    var path = TempDirectory();
+    try
+    {
+        var config = new PluginConfiguration();
+        var (library, proxy) = LibraryProxy.Create();
+        var selectedId = Guid.NewGuid().ToString("N");
+        proxy.Folders.Add(new VirtualFolderInfo { ItemId = selectedId, Name = "Selected", Locations = [Path.Combine(path, "selected")], CollectionType = CollectionTypeOptions.movies });
+        proxy.Folders.Add(new VirtualFolderInfo { ItemId = Guid.NewGuid().ToString("N"), Name = "Other", Locations = [Path.Combine(path, "other")], CollectionType = CollectionTypeOptions.movies });
+        var movie = new Movie { Id = Guid.NewGuid(), Path = Path.Combine(path, "selected", "movie.mkv") };
+        var other = new Movie { Id = Guid.NewGuid(), Path = Path.Combine(path, "other", "movie.mkv") };
+        var remote = new Movie { Id = Guid.NewGuid(), Path = "https://example.invalid/movie" };
+        proxy.Items[movie.Id] = movie; proxy.Items[other.Id] = other; proxy.Items[remote.Id] = remote;
+        using var catalog = new LibraryCatalog(library, () => config);
+        Equal(2L, (await catalog.GetCountsAsync(true, CancellationToken.None).ConfigureAwait(false)).Movies);
+        config.LibraryIds = selectedId;
+        Equal(1L, (await catalog.GetCountsAsync(false, CancellationToken.None).ConfigureAwait(false)).Movies);
+        False(catalog.IsSelected(other)); False(catalog.IsSelected(remote));
+        config.LibraryIds = Guid.NewGuid().ToString("N");
+        Equal(0L, (await catalog.GetCountsAsync(true, CancellationToken.None).ConfigureAwait(false)).Movies);
+    }
+    finally { Directory.Delete(path, true); }
 }
 
 static Task TestStickyTriggerAsync()

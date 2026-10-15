@@ -5,9 +5,9 @@ using Microsoft.Data.Sqlite;
 namespace Jellyfin.Plugin.Jellix.Data;
 
 /// <summary>Transactional persistent state owned by Jellix.</summary>
-public sealed class JellixDatabase : IDisposable
+public sealed partial class JellixDatabase : IDisposable
 {
-    private const int CurrentSchemaVersion = 5;
+    private const int CurrentSchemaVersion = 6;
     private readonly string _connectionString;
     private readonly string _databasePath;
     private readonly SemaphoreSlim _migrationLock = new(1, 1);
@@ -61,6 +61,8 @@ public sealed class JellixDatabase : IDisposable
             await ExecuteAsync(connection, "UPDATE PlaybackSessions SET CompletedUtc=COALESCE(EndedUtc, LastEventUtc) WHERE Completed=1 AND CompletedUtc IS NULL;", cancellationToken).ConfigureAwait(false);
             await ExecuteAsync(connection, "INSERT OR IGNORE INTO PlaybackSegments(SessionKey, CumulativeWatchSeconds, EventUtc, WatchSeconds) SELECT SessionKey, ActualWatchSeconds, LastEventUtc, ActualWatchSeconds FROM PlaybackSessions WHERE ActualWatchSeconds>0;", cancellationToken).ConfigureAwait(false);
             await MigrateLegacyMediaForgeDestinationsAsync(connection, cancellationToken).ConfigureAwait(false);
+            await ExecuteAsync(connection, LibraryStateSchema, cancellationToken).ConfigureAwait(false);
+            await MigrateLibraryOutboxAsync(connection, cancellationToken).ConfigureAwait(false);
 
             await using var version = connection.CreateCommand();
             version.CommandText = "INSERT OR IGNORE INTO SchemaMigrations(Version, AppliedUtc) VALUES ($version, $utc);";
@@ -906,7 +908,7 @@ public sealed class JellixDatabase : IDisposable
         var result = new List<Guid>();
         await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT ItemId FROM LibraryAnnouncementState WHERE AnnouncedUtc IS NULL ORDER BY FirstSeenUtc LIMIT 1000;";
+        command.CommandText = "SELECT ItemId FROM LibraryAnnouncementState WHERE AnnouncedUtc IS NULL ORDER BY FirstSeenUtc;";
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {

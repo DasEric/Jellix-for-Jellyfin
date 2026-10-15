@@ -225,6 +225,11 @@ public sealed class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
         value.AchievementChannelId = Clean(value.AchievementChannelId);
         value.RequestNotificationChannelId = Clean(value.RequestNotificationChannelId);
         value.NewMediaChannelId = Clean(value.NewMediaChannelId);
+        value.LibraryOverviewChannelId = Clean(value.LibraryOverviewChannelId);
+        value.LibraryIds = Clean(value.LibraryIds);
+        if (value.LibraryIds.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).Any(id => !Guid.TryParse(id, out _)))
+            throw new ArgumentException("Library IDs must be comma-separated GUIDs.", nameof(value));
+        value.MediaStoragePaths = Clean(value.MediaStoragePaths);
         value.AccessRequestChannelId = Clean(value.AccessRequestChannelId);
         value.AdminAlertChannelId = Clean(value.AdminAlertChannelId);
         value.TimeZoneId = Clean(value.TimeZoneId);
@@ -236,6 +241,9 @@ public sealed class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
         value.PasswordTicketLifetimeMinutes = Math.Clamp(value.PasswordTicketLifetimeMinutes, 1, 30);
         value.CompletedPlaybackPercent = Math.Clamp(value.CompletedPlaybackPercent, 50, 100);
         value.MediaForgePollSeconds = Math.Clamp(value.MediaForgePollSeconds, 15, 3600);
+        value.SeriesQuietSeconds = Math.Clamp(value.SeriesQuietSeconds, 10, 1800);
+        value.SeriesMergeHours = Math.Clamp(value.SeriesMergeHours, 1, 168);
+        value.LibraryOverviewMinutes = Math.Clamp(value.LibraryOverviewMinutes, 1, 1440);
         value.AccessRequestCooldownHours = Math.Clamp(value.AccessRequestCooldownHours, 1, 8760);
         value.StickyDebounceSeconds = Math.Clamp(value.StickyDebounceSeconds, 1, 10);
         value.HealthCheckMinutes = Math.Clamp(value.HealthCheckMinutes, 1, 1440);

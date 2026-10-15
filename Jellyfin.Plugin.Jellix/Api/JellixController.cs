@@ -33,6 +33,7 @@ public sealed class JellixController : ControllerBase
     private readonly ISessionManager _sessionManager;
     private readonly DiscordBotService _discord;
     private readonly MediaForgeBridgeClient _mediaForge;
+    private readonly LibraryCatalog _catalog;
     private readonly ILogger<JellixController> _logger;
 
     public JellixController(
@@ -44,6 +45,7 @@ public sealed class JellixController : ControllerBase
         ISessionManager sessionManager,
         DiscordBotService discord,
         MediaForgeBridgeClient mediaForge,
+        LibraryCatalog catalog,
         ILogger<JellixController> logger)
     {
         _database = database;
@@ -54,6 +56,7 @@ public sealed class JellixController : ControllerBase
         _sessionManager = sessionManager;
         _discord = discord;
         _mediaForge = mediaForge;
+        _catalog = catalog;
         _logger = logger;
     }
 
@@ -201,6 +204,7 @@ public sealed class JellixController : ControllerBase
             pendingNotifications = await _database.GetPendingNotificationCountAsync(cancellationToken).ConfigureAwait(false),
             database = "ok",
             configurationIssues = _discord.ConfigurationIssues,
+            mediaLibraries = _catalog.AvailableLibraries().Select(folder => new { id = folder.ItemId, name = folder.Name }),
         });
     }
 

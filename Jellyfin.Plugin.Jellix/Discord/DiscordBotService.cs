@@ -27,7 +27,7 @@ namespace Jellyfin.Plugin.Jellix.Discord;
 
 /// <summary>Discord gateway, commands, persistent outbound queue and stickies.</summary>
 [SuppressMessage("Globalization", "CA1305", Justification = "Discord output intentionally follows the configured server language and culture.")]
-public sealed class DiscordBotService : BackgroundService
+public sealed partial class DiscordBotService : BackgroundService
 {
     private static readonly TimeSpan InteractionRateWindow = TimeSpan.FromMinutes(1);
     private static readonly Action<ILogger, string, Exception?> LogDiscord = LoggerMessage.Define<string>(
@@ -44,6 +44,7 @@ public sealed class DiscordBotService : BackgroundService
     private readonly MediaForgeBridgeClient _mediaForge;
     private readonly IUserManager _userManager;
     private readonly ILibraryManager _libraryManager;
+    private readonly LibraryCatalog _catalog;
     private readonly ISessionManager _sessionManager;
     private readonly IServerApplicationHost _applicationHost;
     private readonly OperationRateLimiter _rateLimiter;
@@ -70,6 +71,7 @@ public sealed class DiscordBotService : BackgroundService
         MediaForgeBridgeClient mediaForge,
         IUserManager userManager,
         ILibraryManager libraryManager,
+        LibraryCatalog catalog,
         ISessionManager sessionManager,
         IServerApplicationHost applicationHost,
         OperationRateLimiter rateLimiter,
@@ -81,6 +83,7 @@ public sealed class DiscordBotService : BackgroundService
         _mediaForge = mediaForge;
         _userManager = userManager;
         _libraryManager = libraryManager;
+        _catalog = catalog;
         _sessionManager = sessionManager;
         _applicationHost = applicationHost;
         _rateLimiter = rateLimiter;
@@ -359,6 +362,7 @@ public sealed class DiscordBotService : BackgroundService
         {
             ("Achievement-Kanal", config.AchievementChannelId, config.AchievementsEnabled && config.AchievementNotificationMode == "channel"),
             ("Neuigkeiten-Kanal", config.NewMediaChannelId, config.NewMediaNotificationsEnabled || config.NewEpisodeNotificationsEnabled),
+            ("Bibliotheksübersicht-Kanal", config.LibraryOverviewChannelId, config.LibraryOverviewEnabled),
             ("Fallback-Kanal für Zugangsanfragen", config.AccessRequestChannelId, false),
             ("Warnungs-Kanal", config.AdminAlertChannelId, config.AdminAlertsEnabled && config.AdminAlertMode == "channel"),
         };
@@ -771,11 +775,11 @@ public sealed class DiscordBotService : BackgroundService
 
     private async Task HandleStatusAsync(SocketSlashCommand command)
     {
-        var movieCount = _libraryManager.GetCount(new InternalItemsQuery { Recursive = true, IncludeItemTypes = [BaseItemKind.Movie] });
-        var seriesCount = _libraryManager.GetCount(new InternalItemsQuery { Recursive = true, IncludeItemTypes = [BaseItemKind.Series] });
-        var active = _sessionManager.Sessions.Count(value => value.NowPlayingItem is not null);
-        var description = new StringBuilder().AppendLine("🟢 Jellyfin Online").AppendLine($"👥 {active} Streams").AppendLine($"🎬 {movieCount:N0} {DiscordText.T("Filme", "movies")}").AppendLine($"📺 {seriesCount:N0} {DiscordText.T("Serien", "series")}");
         var admin = IsAdmin(command.User);
+        await command.DeferAsync(ephemeral: admin).ConfigureAwait(false);
+        var counts = await _catalog.GetCountsAsync(false, CancellationToken.None).ConfigureAwait(false);
+        var active = _sessionManager.Sessions.Count(value => value.NowPlayingItem is not null);
+        var description = new StringBuilder().AppendLine("🟢 Jellyfin Online").AppendLine($"👥 {active} Streams").AppendLine($"🎬 {counts.Movies:N0} {DiscordText.T("Filme", "movies")}").AppendLine($"📺 {counts.Series:N0} {DiscordText.T("Serien", "series")} ({counts.Episodes:N0} {DiscordText.T("Folgen insgesamt", "episodes total")})");
         if (admin)
         {
             using var process = Process.GetCurrentProcess();
@@ -796,7 +800,7 @@ public sealed class DiscordBotService : BackgroundService
                 JellixEmbeds.Success,
                 admin ? DiscordText.T("Interne Details • nur für Administratoren", "Internal details • administrators only") : DiscordText.T("Öffentlicher Serverstatus", "Public server status"))
             .Build();
-        await command.RespondAsync(embed: statusEmbed, ephemeral: admin).ConfigureAwait(false);
+        await command.ModifyOriginalResponseAsync(properties => properties.Embed = statusEmbed).ConfigureAwait(false);
     }
 
     private async Task HandleHelpAsync(SocketSlashCommand command, bool admin)
@@ -1378,6 +1382,11 @@ public sealed class DiscordBotService : BackgroundService
         }
 
         var message = command.Data.Message;
+        if (message.Author.Id == _client.CurrentUser?.Id && message.Embeds.Any(embed => IsManagedLibraryFooter(embed.Footer?.Text)))
+        {
+            await command.RespondAsync(DiscordText.T("Diese dynamische Jellix-Nachricht wird automatisch aktualisiert und bleibt unabhängig von statischen Stickies.", "This dynamic Jellix message updates automatically and stays independent of static stickies."), ephemeral: true).ConfigureAwait(false);
+            return;
+        }
         var payload = StickyPayload.FromMessage(message);
         if (string.IsNullOrWhiteSpace(payload.Content) && payload.Embeds.Count == 0 && payload.AttachmentUrls.Count == 0)
         {
@@ -1624,6 +1633,18 @@ public sealed class DiscordBotService : BackgroundService
     {
         try
         {
+            if (job.Kind is "library-overview" or "library-series")
+            {
+                await SendManagedLibraryNotificationAsync(job, cancellationToken).ConfigureAwait(false);
+                await _database.CompleteManagedNotificationAsync(job, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            if (job.Kind == "library" && (Plugin.Instance?.Configuration is not { BotEnabled: true, NewMediaNotificationsEnabled: true } libraryConfig
+                || job.Destination != "channel:" + libraryConfig.NewMediaChannelId))
+            {
+                await _database.CompleteNotificationAsync(job.Id, cancellationToken).ConfigureAwait(false);
+                return;
+            }
             if (ShouldSuppressPersonalRequest(job.Kind, Plugin.Instance?.Configuration.RequestNotificationMode, job.Destination))
             {
                 await _database.CompleteNotificationAsync(job.Id, cancellationToken).ConfigureAwait(false);
@@ -1676,14 +1697,14 @@ public sealed class DiscordBotService : BackgroundService
         catch (Exception exception)
         {
             var attempts = job.Attempts + 1;
-            if (attempts >= 20)
+            if (attempts >= 20 && job.Kind is not ("library-overview" or "library-series"))
             {
                 await _database.AbandonNotificationAsync(job.Id, "Delivery failed permanently.", cancellationToken).ConfigureAwait(false);
                 LogDiscordWarning(_logger, "notification was abandoned after repeated delivery failures", exception);
                 return;
             }
 
-            var delay = TimeSpan.FromSeconds(Math.Min(3600, Math.Pow(2, Math.Min(attempts, 10))));
+            var delay = TimeSpan.FromSeconds(Math.Max(5, Math.Min(3600, Math.Pow(2, Math.Min(attempts, 10)))));
             await _database.RetryNotificationAsync(job.Id, attempts, DateTime.UtcNow.Add(delay), "Delivery failed.", cancellationToken).ConfigureAwait(false);
             LogDiscordWarning(_logger, "notification delivery failed", exception);
         }

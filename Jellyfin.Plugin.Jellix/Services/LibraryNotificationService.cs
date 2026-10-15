@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Threading.Channels;
 using Jellyfin.Data.Enums;
 using Jellyfin.Plugin.Jellix.Data;
+using Jellyfin.Plugin.Jellix.Configuration;
 using Jellyfin.Plugin.Jellix.Models;
 using MediaBrowser.Controller.Drawing;
 using MediaBrowser.Controller.Entities;
@@ -12,402 +13,312 @@ using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Entities;
+using MediaBrowser.Model.Tasks;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.Jellix.Services;
 
-/// <summary>Publishes genuinely new library items after a persistent initial baseline.</summary>
+/// <summary>Durable per-series aggregation; episode events never send individual messages.</summary>
 public sealed class LibraryNotificationService : BackgroundService
 {
-    private static readonly TimeSpan ParentAnnouncementWindow = TimeSpan.FromHours(24);
-    private static readonly Action<ILogger, Exception?> LogFailure = LoggerMessage.Define(
-        LogLevel.Warning,
-        new EventId(3001, "LibraryNotificationFailed"),
-        "Jellix could not prepare a library notification");
+    private static readonly Action<ILogger, Exception?> LogFailure = LoggerMessage.Define(LogLevel.Warning, new EventId(3001, "LibraryNotificationFailed"), "Jellix could not prepare a library notification");
     private readonly ILibraryManager _libraryManager;
     private readonly IImageProcessor _imageProcessor;
     private readonly JellixDatabase _database;
+    private readonly LibraryCatalog _catalog;
+    private readonly ITaskManager _tasks;
     private readonly ILogger<LibraryNotificationService> _logger;
-    private readonly Channel<Guid> _items = Channel.CreateUnbounded<Guid>(new UnboundedChannelOptions
-    {
-        SingleReader = true,
-        SingleWriter = false,
-        AllowSynchronousContinuations = false,
-    });
+    private readonly Func<PluginConfiguration?> _configuration;
+    private readonly TimeProvider _time;
+    private readonly Channel<Guid> _items = Channel.CreateUnbounded<Guid>(new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
     private bool _ready;
 
-    public LibraryNotificationService(
-        ILibraryManager libraryManager,
-        IImageProcessor imageProcessor,
-        JellixDatabase database,
-        ILogger<LibraryNotificationService> logger)
+    public LibraryNotificationService(ILibraryManager libraryManager, IImageProcessor imageProcessor, JellixDatabase database, LibraryCatalog catalog, ITaskManager tasks, ILogger<LibraryNotificationService> logger)
+        : this(libraryManager, imageProcessor, database, catalog, tasks, logger, () => Plugin.Instance?.Configuration, TimeProvider.System) { }
+
+    internal LibraryNotificationService(ILibraryManager libraryManager, IImageProcessor imageProcessor, JellixDatabase database, LibraryCatalog catalog, ITaskManager tasks, ILogger<LibraryNotificationService> logger, Func<PluginConfiguration?> configuration, TimeProvider time)
     {
         _libraryManager = libraryManager;
         _imageProcessor = imageProcessor;
         _database = database;
+        _catalog = catalog;
+        _tasks = tasks;
         _logger = logger;
+        _configuration = configuration;
+        _time = time;
     }
 
     public override async Task StartAsync(CancellationToken cancellationToken)
     {
+        _libraryManager.ItemAdded += OnItemChanged;
+        _libraryManager.ItemUpdated += OnItemChanged;
         try
         {
-            await _database.InitializeAsync(cancellationToken).ConfigureAwait(false);
-            var baseline = await _database.GetBotStateAsync("library-baseline-v1", cancellationToken).ConfigureAwait(false);
-            if (baseline is null)
-            {
-                var existing = _libraryManager.GetItemList(new InternalItemsQuery
-                {
-                    Recursive = true,
-                    IsVirtualItem = false,
-                    IncludeItemTypes = [BaseItemKind.Movie, BaseItemKind.Series, BaseItemKind.Season, BaseItemKind.Episode],
-                });
-                await _database.SeedLibraryItemsAsync(existing.Select(static value => value.Id), cancellationToken).ConfigureAwait(false);
-                await _database.SetBotStateAsync("library-baseline-v1", DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture), cancellationToken).ConfigureAwait(false);
-                baseline = await _database.GetBotStateAsync("library-baseline-v1", cancellationToken).ConfigureAwait(false);
-            }
-
-            if (await _database.GetBotStateAsync("library-baseline-announced-v2", cancellationToken).ConfigureAwait(false) is null
-                && DateTime.TryParse(baseline, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var baselineUtc))
-            {
-                await _database.MarkLegacyLibraryBaselineAnnouncedAsync(baselineUtc.ToUniversalTime(), cancellationToken).ConfigureAwait(false);
-                await _database.SetBotStateAsync("library-baseline-announced-v2", DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture), cancellationToken).ConfigureAwait(false);
-            }
-
-            var pendingItems = await _database.ListPendingLibraryAnnouncementsAsync(cancellationToken).ConfigureAwait(false);
-            if (await _database.GetBotStateAsync("library-identity-baseline-v1", cancellationToken).ConfigureAwait(false) is null)
-            {
-                var pendingSet = pendingItems.ToHashSet();
-                var existing = _libraryManager.GetItemList(new InternalItemsQuery
-                {
-                    Recursive = true,
-                    IsVirtualItem = false,
-                    IncludeItemTypes = [BaseItemKind.Movie, BaseItemKind.Series, BaseItemKind.Season, BaseItemKind.Episode],
-                });
-                await _database.SeedLibraryIdentitiesAsync(
-                    existing.Where(item => !pendingSet.Contains(item.Id)).Select(item => (BuildStableIdentity(item), item.Id)),
-                    cancellationToken).ConfigureAwait(false);
-                await _database.SetBotStateAsync("library-identity-baseline-v1", DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture), cancellationToken).ConfigureAwait(false);
-            }
-
-            foreach (var pending in pendingItems)
-            {
-                _items.Writer.TryWrite(pending);
-            }
-
+            await InitializeLibraryStateAsync(cancellationToken).ConfigureAwait(false);
             _ready = true;
         }
-        catch (Exception exception)
+        catch (Exception exception) { LogFailure(_logger, exception); }
+        await base.StartAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    internal async Task InitializeLibraryStateAsync(CancellationToken cancellationToken)
+    {
+        await _database.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        var existing = GetAllItems();
+        var baseline = await _database.GetBotStateAsync("library-baseline-v1", cancellationToken).ConfigureAwait(false);
+        if (baseline is null)
         {
-            LogFailure(_logger, exception);
-            await base.StartAsync(cancellationToken).ConfigureAwait(false);
-            return;
+            await _database.SeedLibraryItemsAsync(existing.Select(item => item.Id), cancellationToken).ConfigureAwait(false);
+            baseline = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+            await _database.SetBotStateAsync("library-baseline-v1", baseline, cancellationToken).ConfigureAwait(false);
         }
 
-        _libraryManager.ItemAdded += OnItemAdded;
-        await base.StartAsync(cancellationToken).ConfigureAwait(false);
+        if (await _database.GetBotStateAsync("library-baseline-announced-v2", cancellationToken).ConfigureAwait(false) is null
+            && DateTime.TryParse(baseline, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var baselineUtc))
+        {
+            await _database.MarkLegacyLibraryBaselineAnnouncedAsync(baselineUtc.ToUniversalTime(), cancellationToken).ConfigureAwait(false);
+            await _database.SetBotStateAsync("library-baseline-announced-v2", "1", cancellationToken).ConfigureAwait(false);
+        }
+
+        var pending = (await _database.ListPendingLibraryAnnouncementsAsync(cancellationToken).ConfigureAwait(false)).ToHashSet();
+        // Legacy parent jobs had already marked their children as covered.
+        // Recover those actual episodes before seeding the new identity baseline.
+        var coveredChildren = existing.OfType<Episode>().Where(episode => pending.Contains(episode.SeriesId) || pending.Contains(episode.SeasonId)).Select(episode => episode.Id).ToArray();
+        if (coveredChildren.Length > 0)
+        {
+            await _database.RestorePendingLibraryItemsAsync(coveredChildren, cancellationToken).ConfigureAwait(false);
+            pending.UnionWith(coveredChildren);
+        }
+        var known = await _database.ListKnownLibraryIdsAsync(cancellationToken).ConfigureAwait(false);
+        if (await _database.GetBotStateAsync("library-logical-baseline-v1", cancellationToken).ConfigureAwait(false) is null)
+        {
+            var identities = new List<(string Identity, Guid ItemId)>();
+            var keys = new Dictionary<Guid, string>();
+            foreach (var item in existing.Where(item => known.Contains(item.Id) && !pending.Contains(item.Id)))
+            {
+                identities.Add((BuildStableIdentity(item), item.Id));
+                if (LibraryMedia.IsLocal(item))
+                {
+                    identities.Add((await IdentityAsync(item, keys, cancellationToken).ConfigureAwait(false), item.Id));
+                    if (item is Episode episode && keys.TryGetValue(episode.SeriesId, out var seriesKey))
+                        identities.AddRange(LibraryMedia.EpisodePositions(episode, seriesKey).Select(position => (position.Identity, item.Id)));
+                }
+            }
+            await _database.SeedLibraryIdentitiesAsync(identities, cancellationToken).ConfigureAwait(false);
+            await _database.SetBotStateAsync("library-logical-baseline-v1", "1", cancellationToken).ConfigureAwait(false);
+        }
+
+        foreach (var id in pending.Concat(existing.Where(item => !known.Contains(item.Id)).Select(item => item.Id))) _items.Writer.TryWrite(id);
     }
 
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
-        _libraryManager.ItemAdded -= OnItemAdded;
+        _libraryManager.ItemAdded -= OnItemChanged;
+        _libraryManager.ItemUpdated -= OnItemChanged;
         _items.Writer.TryComplete();
-        try
-        {
-            if (ExecuteTask is not null)
-            {
-                await ExecuteTask.WaitAsync(cancellationToken).ConfigureAwait(false);
-            }
-        }
-        finally
-        {
-            await base.StopAsync(cancellationToken).ConfigureAwait(false);
-        }
+        await base.StopAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private IReadOnlyList<BaseItem> GetAllItems() => _libraryManager.GetItemList(new InternalItemsQuery
+    {
+        Recursive = true, IsVirtualItem = false,
+        IncludeItemTypes = [BaseItemKind.Movie, BaseItemKind.Series, BaseItemKind.Season, BaseItemKind.Episode],
+    });
+
+    private void OnItemChanged(object? sender, ItemChangeEventArgs args)
+    {
+        if (args.Item is Movie or Series or Season or Episode && !args.Item.IsVirtualItem) _items.Writer.TryWrite(args.Item.Id);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         if (!_ready) return;
-        await ProcessQueueAsync(stoppingToken).ConfigureAwait(false);
-    }
-
-    private async Task ProcessQueueAsync(CancellationToken stoppingToken)
-    {
-        while (await _items.Reader.WaitToReadAsync(stoppingToken).ConfigureAwait(false))
+        var nextReconcile = DateTime.UtcNow.AddMinutes(5);
+        while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                var batch = new HashSet<Guid>();
-                while (_items.Reader.TryRead(out var itemId)) batch.Add(itemId);
-                if (batch.Count == 0)
+                var ids = new HashSet<Guid>();
+                while (_items.Reader.TryRead(out var id)) ids.Add(id);
+                if (DateTime.UtcNow >= nextReconcile)
                 {
-                    continue;
+                    var known = await _database.ListKnownLibraryIdsAsync(stoppingToken).ConfigureAwait(false);
+                    ids.UnionWith(GetAllItems().Where(item => !known.Contains(item.Id)).Select(item => item.Id));
+                    ids.UnionWith(await _database.ListPendingLibraryAnnouncementsAsync(stoppingToken).ConfigureAwait(false));
+                    nextReconcile = DateTime.UtcNow.AddMinutes(5);
                 }
 
-                // Jellyfin emits parents and children independently during a
-                // scan. Give the hierarchy a short settling window, then make
-                // one decision for the complete group.
-                await Task.Delay(TimeSpan.FromSeconds(8), stoppingToken).ConfigureAwait(false);
-                while (_items.Reader.TryRead(out var additionalId)) batch.Add(additionalId);
-                await ProcessBatchAsync(batch, stoppingToken).ConfigureAwait(false);
+                var ordered = ids.Select(id => _libraryManager.GetItemById(id)).OfType<BaseItem>()
+                    .OrderBy(item => item switch { Series => 0, Season => 1, Movie => 2, _ => 3 }).ToArray();
+                var keys = new Dictionary<Guid, string>();
+                foreach (var item in ordered)
+                {
+                    try { await ObserveAsync(item, keys, stoppingToken).ConfigureAwait(false); }
+                    catch (Exception exception) when (exception is not OperationCanceledException) { LogFailure(_logger, exception); }
+                }
+
+                if (!IsLibraryScanRunning()) await FlushSeriesAsync(stoppingToken).ConfigureAwait(false);
+                await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                return;
-            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { return; }
             catch (Exception exception)
             {
                 LogFailure(_logger, exception);
+                await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken).ConfigureAwait(false);
             }
         }
     }
 
-    private void OnItemAdded(object? sender, ItemChangeEventArgs eventArgs)
+    private bool IsLibraryScanRunning() => _tasks.ScheduledTasks.Any(task =>
+        task.State is TaskState.Running or TaskState.Cancelling
+        && task.ScheduledTask.GetType().Name.Contains("RefreshMediaLibrary", StringComparison.OrdinalIgnoreCase));
+
+    private async Task<string> IdentityAsync(BaseItem item, Dictionary<Guid, string> keys, CancellationToken cancellationToken)
     {
-        if (eventArgs.Item is Movie or Series or Season or Episode && !eventArgs.Item.IsVirtualItem)
+        if (item is not Episode episode || episode.SeriesId == Guid.Empty) return LibraryMedia.Identity(item);
+        if (!keys.TryGetValue(episode.SeriesId, out var key))
         {
-            _items.Writer.TryWrite(eventArgs.Item.Id);
+            key = await _database.ResolveSeriesKeyAsync(episode.SeriesId, _catalog.SeriesKey(episode.SeriesId), cancellationToken).ConfigureAwait(false);
+            keys[episode.SeriesId] = key;
         }
+        return LibraryMedia.EpisodeIdentity(episode, key);
     }
 
-    private async Task ProcessBatchAsync(IEnumerable<Guid> itemIds, CancellationToken cancellationToken)
+    internal async Task ObserveAsync(BaseItem item, Dictionary<Guid, string> keys, CancellationToken cancellationToken)
     {
-        var candidates = new List<AnnouncementCandidate>();
-        foreach (var itemId in itemIds)
+        if (await _database.IsLibraryItemKnownAsync(item.Id, cancellationToken).ConfigureAwait(false)
+            && !await _database.IsLibraryItemPendingAsync(item.Id, cancellationToken).ConfigureAwait(false)) return;
+        await _database.TryRegisterLibraryItemAsync(item.Id, DateTime.UtcNow, cancellationToken).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(item.Path)) return;
+        if (!LibraryMedia.IsLocal(item))
         {
-            var candidate = await PrepareCandidateAsync(itemId, cancellationToken).ConfigureAwait(false);
-            if (candidate is not null) candidates.Add(candidate);
+            await _database.MarkLibraryItemAnnouncedAsync(item.Id, cancellationToken).ConfigureAwait(false);
+            return;
         }
-
-        var config = Plugin.Instance?.Configuration;
-        var parentAnnouncementsEnabled = config is { NewMediaNotificationsEnabled: true }
-            && ulong.TryParse(config.NewMediaChannelId, NumberStyles.None, CultureInfo.InvariantCulture, out _);
-        var newSeries = parentAnnouncementsEnabled
-            ? candidates.Where(candidate => candidate.Item is Series).Select(candidate => candidate.Item.Id).ToHashSet()
-            : [];
-        var newSeasons = parentAnnouncementsEnabled
-            ? candidates.Where(candidate => candidate.Item is Season).Select(candidate => candidate.Item.Id).ToHashSet()
-            : [];
-        foreach (var candidate in candidates.OrderBy(static candidate => NotificationOrder(candidate.Item)))
+        // Parent IDs can be filled by a later ItemUpdated event.
+        if (item is Episode { SeriesId: var seriesId } && seriesId == Guid.Empty) return;
+        var identity = await IdentityAsync(item, keys, cancellationToken).ConfigureAwait(false);
+        var isNew = await _database.TryRegisterLibraryIdentityAsync(identity, item.Id, DateTime.UtcNow, cancellationToken).ConfigureAwait(false);
+        if (!isNew && !await _database.IsLibraryIdentityPendingAsync(identity, cancellationToken).ConfigureAwait(false))
         {
-            if (await IsCoveredByParentAsync(candidate.Item, newSeries, newSeasons, parentAnnouncementsEnabled, cancellationToken).ConfigureAwait(false))
-            {
-                await MarkAnnouncedAsync(candidate, cancellationToken).ConfigureAwait(false);
-                continue;
-            }
-
-            await QueueAnnouncementAsync(candidate, cancellationToken).ConfigureAwait(false);
-        }
-    }
-
-    private async Task<AnnouncementCandidate?> PrepareCandidateAsync(Guid itemId, CancellationToken cancellationToken)
-    {
-        if (await _database.IsLibraryItemKnownAsync(itemId, cancellationToken).ConfigureAwait(false)
-            && !await _database.IsLibraryItemPendingAsync(itemId, cancellationToken).ConfigureAwait(false))
-        {
-            return null;
-        }
-
-        var item = _libraryManager.GetItemById(itemId);
-        if (item is null || item.IsVirtualItem)
-        {
-            if (await _database.IsLibraryItemPendingAsync(itemId, cancellationToken).ConfigureAwait(false))
-            {
-                await _database.MarkLibraryItemAnnouncedAsync(itemId, cancellationToken).ConfigureAwait(false);
-            }
-
-            return null;
-        }
-
-        var newlyRegistered = await _database.TryRegisterLibraryItemAsync(itemId, DateTime.UtcNow, cancellationToken).ConfigureAwait(false);
-        if (!newlyRegistered && !await _database.IsLibraryItemPendingAsync(itemId, cancellationToken).ConfigureAwait(false)) return null;
-
-        var identity = BuildStableIdentity(item);
-        var newIdentity = await _database.TryRegisterLibraryIdentityAsync(identity, itemId, DateTime.UtcNow, cancellationToken).ConfigureAwait(false);
-        if (!newIdentity && !await _database.IsLibraryIdentityPendingAsync(identity, cancellationToken).ConfigureAwait(false))
-        {
-            await _database.MarkLibraryItemAnnouncedAsync(itemId, cancellationToken).ConfigureAwait(false);
-            return null;
-        }
-
-        return new AnnouncementCandidate(item, identity);
-    }
-
-    private async Task<bool> IsCoveredByParentAsync(
-        BaseItem item,
-        HashSet<Guid> newSeries,
-        HashSet<Guid> newSeasons,
-        bool parentAnnouncementsEnabled,
-        CancellationToken cancellationToken)
-    {
-        if (HasNewParentInBatch(item, newSeries, newSeasons)) return true;
-        if (!parentAnnouncementsEnabled) return false;
-        if (item is Season season)
-        {
-            return season.SeriesId != Guid.Empty && await _database.WasLibraryItemRecentlyAnnouncedAsync(season.SeriesId, ParentAnnouncementWindow, cancellationToken).ConfigureAwait(false);
-        }
-
-        if (item is Episode episode)
-        {
-            return (episode.SeriesId != Guid.Empty && await _database.WasLibraryItemRecentlyAnnouncedAsync(episode.SeriesId, ParentAnnouncementWindow, cancellationToken).ConfigureAwait(false))
-                || (episode.SeasonId != Guid.Empty && await _database.WasLibraryItemRecentlyAnnouncedAsync(episode.SeasonId, ParentAnnouncementWindow, cancellationToken).ConfigureAwait(false));
-        }
-
-        return false;
-    }
-
-    internal static bool HasNewParentInBatch(BaseItem item, ISet<Guid> newSeries, ISet<Guid> newSeasons)
-        => item switch
-        {
-            Season season => newSeries.Contains(season.SeriesId),
-            Episode episode => newSeries.Contains(episode.SeriesId) || newSeasons.Contains(episode.SeasonId),
-            _ => false,
-        };
-
-    private async Task QueueAnnouncementAsync(AnnouncementCandidate candidate, CancellationToken cancellationToken)
-    {
-        var config = Plugin.Instance?.Configuration;
-        var item = candidate.Item;
-
-        var isEpisode = item is Episode;
-        if (config is null
-            || (isEpisode && !config.NewEpisodeNotificationsEnabled)
-            || (!isEpisode && !config.NewMediaNotificationsEnabled)
-            || !ulong.TryParse(config.NewMediaChannelId, NumberStyles.None, CultureInfo.InvariantCulture, out var channelId))
-        {
-            await MarkAnnouncedAsync(candidate, cancellationToken).ConfigureAwait(false);
+            if (item is Episode replacement && keys.TryGetValue(replacement.SeriesId, out var replacementKey))
+                foreach (var position in LibraryMedia.EpisodePositions(replacement, replacementKey))
+                    await _database.RebindSeriesMemberAsync(position.Identity, item.Id, cancellationToken).ConfigureAwait(false);
+            await _database.MarkLibraryItemAnnouncedAsync(item.Id, cancellationToken).ConfigureAwait(false);
             return;
         }
 
-        string? imagePath = null;
+        var config = _configuration();
+        var enabled = config?.BotEnabled == true && ulong.TryParse(config.NewMediaChannelId, NumberStyles.None, CultureInfo.InvariantCulture, out _);
+        if (enabled && _catalog.IsSelected(item))
+        {
+            if (item is Series or Season && config!.NewMediaNotificationsEnabled)
+                await _database.RegisterParentTriggerAsync(item.Id, _time.GetUtcNow().UtcDateTime, cancellationToken).ConfigureAwait(false);
+            else if (item is Movie && config!.NewMediaNotificationsEnabled && LibraryMedia.IsLocal(item))
+                await QueueMovieAsync(item, identity, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (item is Episode localEpisode)
+        {
+            var selected = enabled && _catalog.IsSelected(localEpisode);
+            var cutoff = _time.GetUtcNow().UtcDateTime.AddHours(-Math.Clamp(config?.SeriesMergeHours ?? 24, 1, 168));
+            var triggered = selected && config!.NewMediaNotificationsEnabled && (
+                await _database.HasParentTriggerAsync(localEpisode.SeriesId, localEpisode.SeasonId, cutoff, cancellationToken).ConfigureAwait(false)
+                || await _database.HasActiveSeriesBatchAsync(keys[localEpisode.SeriesId], config.NewMediaChannelId, cutoff, cancellationToken).ConfigureAwait(false));
+            var announce = selected && (config!.NewEpisodeNotificationsEnabled || triggered);
+            if (!announce && selected && config!.NewMediaNotificationsEnabled && (
+                await _database.IsLibraryItemPendingAsync(localEpisode.SeriesId, cancellationToken).ConfigureAwait(false)
+                || await _database.IsLibraryItemPendingAsync(localEpisode.SeasonId, cancellationToken).ConfigureAwait(false))) return;
+
+            foreach (var position in LibraryMedia.EpisodePositions(localEpisode, keys[localEpisode.SeriesId]))
+            {
+                var newPosition = await _database.TryRegisterLibraryIdentityAsync(position.Identity, item.Id, DateTime.UtcNow, cancellationToken).ConfigureAwait(false);
+                if (!newPosition && !await _database.IsLibraryIdentityPendingAsync(position.Identity, cancellationToken).ConfigureAwait(false))
+                {
+                    await _database.RebindSeriesMemberAsync(position.Identity, item.Id, cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+                if (announce)
+                {
+                    await _database.AddSeriesMemberAsync(keys[localEpisode.SeriesId], localEpisode.SeriesId, config!.NewMediaChannelId, position.Identity, item.Id,
+                        _time.GetUtcNow().UtcDateTime, TimeSpan.FromHours(Math.Clamp(config.SeriesMergeHours, 1, 168)), cancellationToken, position.Number).ConfigureAwait(false);
+                    await _database.ConsumeParentTriggersAsync(localEpisode.SeriesId, localEpisode.SeasonId, _time.GetUtcNow().UtcDateTime, cancellationToken).ConfigureAwait(false);
+                }
+                await _database.MarkLibraryIdentityAnnouncedAsync(position.Identity, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        // AnnouncedUtc is legacy ingestion state, not a delivery receipt.
+        // Delivery is recorded separately by the outbox and ManagedMessages.
+        await _database.MarkLibraryIdentityAnnouncedAsync(identity, cancellationToken).ConfigureAwait(false);
+        await _database.MarkLibraryItemAnnouncedAsync(item.Id, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal async Task FlushSeriesAsync(CancellationToken cancellationToken)
+    {
+        var config = _configuration();
+        if (config is null) return;
+        var batches = await _database.ListReadySeriesBatchesAsync(_time.GetUtcNow().UtcDateTime.AddSeconds(-Math.Clamp(config.SeriesQuietSeconds, 10, 1800)), cancellationToken).ConfigureAwait(false);
+        foreach (var batch in batches)
+        {
+            var members = await _database.ListSeriesMembersAsync(batch.Id, cancellationToken).ConfigureAwait(false);
+            var available = members.Select(member => (Member: member, Episode: _libraryManager.GetItemById(member.ItemId) as Episode))
+                .Where(value => value.Episode is { } episode && LibraryMedia.IsLocal(episode) && _catalog.IsSelected(episode)
+                    && (!value.Member.EpisodeNumber.HasValue || (value.Member.EpisodeNumber >= episode.IndexNumber
+                        && value.Member.EpisodeNumber <= (episode.IndexNumberEnd ?? episode.IndexNumber)))).ToArray();
+            if (available.Length == 0 || !config.BotEnabled || (!config.NewMediaNotificationsEnabled && !config.NewEpisodeNotificationsEnabled)
+                || batch.ChannelId != config.NewMediaChannelId)
+            {
+                await _database.AcknowledgeSeriesBatchAsync(batch, cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+
+            var series = _libraryManager.GetItemById(batch.SeriesId);
+            var episodes = available.Select(value => value.Episode!).ToArray();
+            var structure = LibraryMedia.CountEpisodes(episodes);
+            var counts = ((long)available.Length, structure.Seasons, structure.Specials);
+            var name = series?.Name ?? episodes[0].SeriesName ?? episodes[0].Name;
+            var imagePath = series is null ? null : await PreparePosterAsync(series).ConfigureAwait(false);
+            var payload = JsonSerializer.Serialize(new
+            {
+                managedKey = "series:" + batch.Id,
+                title = config.Language == "en" ? "📺 New on Jellyfin" : "📺 Neu auf Jellyfin",
+                description = LibraryMedia.DescribeSeries(name, counts, config.Language == "en"),
+                color = 0x00A4DCu, attachmentPath = imagePath,
+            });
+            await _database.QueueSeriesBatchAsync(batch, payload, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async Task QueueMovieAsync(BaseItem item, string identity, CancellationToken cancellationToken)
+    {
+        var config = _configuration()!;
+        var lines = new List<string> { "**" + LibraryMedia.Escape(item.Name.Length > 250 ? item.Name[..250] : item.Name) + "**" };
+        if (item.ProductionYear.HasValue) lines.Add("📅 " + item.ProductionYear.Value.ToString(CultureInfo.InvariantCulture));
+        if (item.CommunityRating.HasValue) lines.Add("⭐ " + item.CommunityRating.Value.ToString("0.0", CultureInfo.InvariantCulture) + "/10");
+        if (item.RunTimeTicks is > 0) lines.Add("⏱️ " + TimeSpan.FromTicks(item.RunTimeTicks.Value).TotalMinutes.ToString("0", CultureInfo.InvariantCulture) + " min");
+        if (!string.IsNullOrWhiteSpace(item.Overview)) lines.Add(LibraryMedia.Escape(item.Overview.Length > 500 ? item.Overview[..500] + "…" : item.Overview));
+        var payload = JsonSerializer.Serialize(new { title = config.Language == "en" ? "🆕 New on Jellyfin" : "🆕 Neu auf Jellyfin", description = string.Join('\n', lines), color = 0x00A4DCu, attachmentPath = await PreparePosterAsync(item).ConfigureAwait(false) });
+        await _database.EnqueueNotificationAsync(NotificationPriority.Low, "library", "channel:" + config.NewMediaChannelId, payload, "library-movie:" + identity, DateTime.UtcNow, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<string?> PreparePosterAsync(BaseItem item)
+    {
         try
         {
-            imagePath = await PreparePosterAsync(item, cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException)
-        {
-            LogFailure(_logger, exception);
-        }
-        var title = item switch
-        {
-            Episode => "📺 " + (config.Language == "en" ? "New episode" : "Neue Episode"),
-            Season => "📺 " + (config.Language == "en" ? "New season" : "Neue Staffel"),
-            _ => "🆕 " + (config.Language == "en" ? "New on Jellyfin" : "Neu auf Jellyfin"),
-        };
-        var description = BuildDescription(item, config.Language);
-        var payload = JsonSerializer.Serialize(new
-        {
-            title,
-            description,
-            color = 0x00A4DCu,
-            attachmentPath = imagePath,
-        });
-        await _database.EnqueueNotificationAsync(
-            NotificationPriority.Low,
-            "library",
-            $"channel:{channelId.ToString(CultureInfo.InvariantCulture)}",
-            payload,
-            $"library:{candidate.Identity}",
-            DateTime.UtcNow,
-            cancellationToken).ConfigureAwait(false);
-        await MarkAnnouncedAsync(candidate, cancellationToken).ConfigureAwait(false);
-        try
-        {
-            await _database.WriteAuditAsync("bot", "jellix", "library-announcement-queued", "item", item.Id.ToString("N"), true, item.Name, cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception exception)
-        {
-            LogFailure(_logger, exception);
-        }
-    }
-
-    private async Task MarkAnnouncedAsync(AnnouncementCandidate candidate, CancellationToken cancellationToken)
-    {
-        await _database.MarkLibraryItemAnnouncedAsync(candidate.Item.Id, cancellationToken).ConfigureAwait(false);
-        await _database.MarkLibraryIdentityAnnouncedAsync(candidate.Identity, cancellationToken).ConfigureAwait(false);
-    }
-
-    private async Task<string?> PreparePosterAsync(BaseItem original, CancellationToken cancellationToken)
-    {
-        BaseItem item = original;
-        for (var attempt = 0; attempt < 6; attempt++)
-        {
-            item = _libraryManager.GetItemById(original.Id) ?? original;
-            if (!item.HasImage(ImageType.Primary) && item is Episode episode && episode.SeriesId != Guid.Empty)
+            if (!item.HasImage(ImageType.Primary)) return null;
+            var image = await _imageProcessor.ProcessImage(new ImageProcessingOptions
             {
-                item = _libraryManager.GetItemById(episode.SeriesId) ?? item;
-            }
-            else if (!item.HasImage(ImageType.Primary) && item is Season season && season.SeriesId != Guid.Empty)
-            {
-                item = _libraryManager.GetItemById(season.SeriesId) ?? item;
-            }
-
-            if (item.HasImage(ImageType.Primary)) break;
-            if (attempt < 5) await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
+                Item = item, ItemId = item.Id, Image = item.GetImageInfo(ImageType.Primary, 0), ImageIndex = 0,
+                MaxWidth = 600, MaxHeight = 900, Quality = 85, SupportedOutputFormats = _imageProcessor.GetSupportedImageOutputFormats(),
+            }).ConfigureAwait(false);
+            return File.Exists(image.Item1) ? image.Item1 : null;
         }
-
-        if (!item.HasImage(ImageType.Primary))
-        {
-            return null;
-        }
-
-        var image = item.GetImageInfo(ImageType.Primary, 0);
-        var result = await _imageProcessor.ProcessImage(new ImageProcessingOptions
-        {
-            Item = item,
-            ItemId = item.Id,
-            Image = image,
-            ImageIndex = 0,
-            MaxWidth = 600,
-            MaxHeight = 900,
-            Quality = 85,
-            SupportedOutputFormats = _imageProcessor.GetSupportedImageOutputFormats(),
-        }).ConfigureAwait(false);
-        return File.Exists(result.Item1) ? result.Item1 : null;
+        catch (Exception exception) { LogFailure(_logger, exception); return null; }
     }
 
-    private string BuildDescription(BaseItem item, string language)
-    {
-        if (item is Episode episode)
-        {
-            var seasonNumber = episode.ParentIndexNumber.GetValueOrDefault();
-            var number = episode.IndexNumber.GetValueOrDefault();
-            return Limit($"**{Escape(episode.SeriesName ?? episode.Name)}**\nS{seasonNumber:00}E{number:00} — {Escape(episode.Name)}", 4096);
-        }
-
-        if (item is Season season)
-        {
-            var series = season.SeriesId == Guid.Empty ? null : _libraryManager.GetItemById(season.SeriesId);
-            var seriesName = series?.Name ?? season.SeriesName ?? season.Name;
-            var seasonLabel = language == "en" ? "Season" : "Staffel";
-            var seasonName = season.IndexNumber.HasValue ? $"{seasonLabel} {season.IndexNumber.Value}" : season.Name;
-            return Limit($"**{Escape(seriesName)}**\n{Escape(seasonName)}", 4096);
-        }
-
-        var lines = new List<string> { $"**{Escape(item.Name)}**" };
-        if (item.CommunityRating.HasValue) lines.Add($"⭐ {item.CommunityRating.Value:0.0}/10");
-        if (item.ProductionYear.HasValue) lines.Add($"📅 {item.ProductionYear.Value}");
-        if (item.RunTimeTicks.HasValue) lines.Add($"⏱️ {TimeSpan.FromTicks(item.RunTimeTicks.Value).TotalMinutes:0} min");
-        if (!string.IsNullOrWhiteSpace(item.Overview))
-        {
-            var overview = item.Overview.Length > 500 ? item.Overview[..500] + "…" : item.Overview;
-            lines.Add(string.Empty);
-            lines.Add(Escape(overview));
-        }
-
-        return Limit(string.Join('\n', lines), 4096);
-    }
-
-    private static string Escape(string value)
-        => value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("*", "\\*", StringComparison.Ordinal).Replace("_", "\\_", StringComparison.Ordinal).Replace("`", "\\`", StringComparison.Ordinal).Replace("~", "\\~", StringComparison.Ordinal).Replace("|", "\\|", StringComparison.Ordinal);
-
-    private static string Limit(string value, int length)
-        => value.Length <= length ? value : value[..(length - 1)] + "…";
-
-    private static int NotificationOrder(BaseItem item)
-        => item switch { Series => 0, Season => 1, Movie => 2, Episode => 3, _ => 4 };
-
+    // Recognizes pre-0.4 persisted identities during migration.
     internal static string BuildStableIdentity(BaseItem item)
     {
         var kind = item switch { Movie => "movie", Series => "series", Season => "season", Episode => "episode", _ => item.GetType().Name.ToLowerInvariant() };
@@ -417,23 +328,10 @@ public sealed class LibraryNotificationService : BackgroundService
             Episode episode => $"|season:{episode.ParentIndexNumber.GetValueOrDefault()}|episode:{episode.IndexNumber.GetValueOrDefault()}",
             _ => string.Empty,
         };
-        string source;
-        if (item.ProviderIds.Count > 0)
-        {
-            source = kind + "|" + string.Join('|', item.ProviderIds.OrderBy(static pair => pair.Key, StringComparer.OrdinalIgnoreCase)
-                .Select(static pair => pair.Key.ToLowerInvariant() + ":" + pair.Value.Trim().ToLowerInvariant())) + position;
-        }
-        else if (!string.IsNullOrWhiteSpace(item.Path))
-        {
-            source = kind + "|" + item.Path.Trim().Replace('\\', '/') + position;
-        }
-        else
-        {
-            source = $"{item.GetType().Name}|{item.ParentId:N}|{item.Name}|{item.ProductionYear.GetValueOrDefault()}{position}";
-        }
-
+        var source = item.ProviderIds.Count > 0
+            ? kind + "|" + string.Join('|', item.ProviderIds.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase).Select(pair => pair.Key.ToLowerInvariant() + ":" + pair.Value.Trim().ToLowerInvariant())) + position
+            : !string.IsNullOrWhiteSpace(item.Path) ? kind + "|" + item.Path.Trim().Replace('\\', '/') + position
+            : $"{item.GetType().Name}|{item.ParentId:N}|{item.Name}|{item.ProductionYear.GetValueOrDefault()}{position}";
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(source)));
     }
-
-    private sealed record AnnouncementCandidate(BaseItem Item, string Identity);
 }

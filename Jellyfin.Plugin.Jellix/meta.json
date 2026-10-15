@@ -1,14 +1,14 @@
 {
   "category": "General",
-  "changelog": "Adds native Jellyfin 12 top navigation for Discord while preserving the Legacy and mobile integrations.",
+  "changelog": "Adds an editable library overview with movie, series, episode and media-storage totals. Groups new episodes and seasons into durable per-series announcements, updates late arrivals in place, and recovers pending imports and uncertain Discord deliveries after restarts.",
   "description": "Discord account tools, playback statistics, notifications and optional MediaForge requests for Jellyfin.",
   "guid": "bea64f51-00f3-4535-8fd3-88bcd2785f24",
   "name": "Jellix",
   "overview": "Discord companion for Jellyfin",
   "owner": "Eric (DasEric)",
   "targetAbi": "12.0.0.0",
-  "timestamp": "2026-09-08T16:38:18Z",
-  "version": "0.3.2.0",
+  "timestamp": "2026-10-15T12:40:21Z",
+  "version": "0.4.0.0",
   "status": "Active",
   "autoUpdate": true
 }

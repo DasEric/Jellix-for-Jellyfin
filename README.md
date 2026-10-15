@@ -99,12 +99,41 @@ The integration requires the protocol-v1 Jellix bridge included with MediaForge 
 
 ### Library notifications
 
-- Announce newly added movies, series, and seasons in a configured Discord channel.
-- Collapse library scans hierarchically: a new series suppresses its season and episode messages, while a new season suppresses its episode messages.
-- Announce a single newly added episode separately when neither its series nor season is new.
-- Include available title, year, rating, runtime, overview, and poster metadata.
+- Announce new movies separately and group TV additions into one editable message per series/import in the configured news channel.
+- Show the actual new content, for example **5 seasons (63 episodes)**. Individual episode and season messages are no longer sent.
+- Wait for a per-series quiet period (120 seconds by default) and a running full library scan to finish before queueing the summary.
+- Merge late arrivals into the same Discord message for 24 hours after the last genuinely new episode (configurable from 1 to 168 hours). Each addition extends this window; rescans do not.
+- A later, separate addition after the merge window creates a new grouped announcement. The window is an import heuristic, not proof that a downloader has finished.
+- Count only non-virtual local episodes, deduplicate numbered episodes and multi-episode ranges, and distinguish specials from regular seasons. A partially present season is never described as complete.
+- Preserve the two existing switches: new media covers movies and new series/season arrivals; new episodes covers additions to an existing series even without a new parent event. Both switches still produce only one TV message.
+- Include available movie metadata and movie/series posters. Poster preparation failure does not discard the announcement.
 - Create a persistent initial baseline so existing content is not announced as new.
-- Resume pending announcements safely after a restart.
+- Persist series membership, import revisions, message IDs and delivery intent. Recover pending items (including more than 1,000 items), additions during downtime, and uncertain Discord sends after a restart.
+- Migrate pending pre-0.4 notifications before starting the outbound worker; covered children of pending series/season jobs are recovered for aggregation.
+
+### Persistent library overview and storage
+
+- Enable **Library overview** in the Jellix dashboard and select its Discord channel. It is disabled by default on upgrades.
+- Publish one message containing **movies**, **series (total episodes)** and **used / total / free media storage**. Reuse that message across restarts rather than posting on every refresh.
+- Refresh after library changes (coalesced) and periodically every five minutes by default. Unchanged snapshots verify that the message still exists without editing it; deleted messages are recreated.
+- Use the optional comma-separated **Library IDs** setting to select movie, TV and mixed libraries for the overview, public `/status`, and new-media notifications. The dashboard lists available library names and IDs. Empty selects all applicable libraries; an unknown configured ID does not silently select all libraries.
+- Series totals require at least one local episode. Movie versions with the same preferred provider ID count once. These are library totals, not users' watched-content statistics.
+- Storage paths default to the selected libraries. Optional overrides accept one absolute directory per line, as visible to the Jellyfin process or container.
+- Show filesystem capacity, including other files on that filesystem, rather than repeatedly scanning video files. Units are decimal GB/TB. If quotas apply, the operating system's reported capacity may be quota-limited.
+- Resolve Windows volumes/mounted folders and accessible UNC shares. Resolve Linux mount points and deduplicate bind mounts of the same filesystem. Do not use a Docker overlay filesystem as a substitute for media capacity.
+- Display unavailable storage explicitly instead of fake zero/free values. A filesystem identity change detected while running remains unavailable until the mount is checked and Jellyfin restarted. Initial startup cannot infer a missing mount if its empty directory lies on an otherwise valid local filesystem; configure and verify the media mounts before starting Jellyfin.
+- Keep dynamic overview/series messages separate from static stickies. Their context menu refuses conversion into a static snapshot; ordinary stickies continue to work.
+- Require **View Channels**, **Send Messages**, **Embed Links**, and **Read Message History** for managed messages. Without **Attach Files**, series summaries can still be sent without a poster.
+
+Example overview:
+
+```text
+📚 Jellyfin-Bibliothek
+🎬 1.240 Filme
+📺 186 Serien (12.438 Folgen insgesamt)
+💾 Medienspeicher 1
+1,00 TB von 4,00 TB belegt · 3,00 TB frei (25 %)
+```
 
 ### Sticky messages
 
@@ -165,6 +194,10 @@ Manual account assignment does not require the Discord bot to be online. It requ
 ## Updates and releases
 
 Pushing a version tag such as `v0.1.0` starts the GitHub Actions release workflow. It validates locked dependencies, audits packages, builds with warnings treated as errors, runs regression tests, creates the plugin and watchdog archives, publishes a GitHub release, and updates the Jellyfin repository manifest on GitHub Pages.
+
+Release **0.4.0** uses tag **`v0.4.0`**, four-part plugin/assembly version **`0.4.0.0`**, and the unchanged Jellyfin ABI **`12.0.0.0`**. `version.json`, the project version fields and `meta.json` must agree. A normal branch push alone does not run the release workflow; the version tag does. No release tag or push is performed by the local implementation.
+
+Before upgrading, stop Jellyfin and save the previous plugin directory, plugin configuration and a consistent Jellix database backup (include the WAL/SHM files if they still exist). Version 0.4 adds schema 6 tables without deleting links or playback history. Test in a separate Discord channel, including a restart and a slow multi-season import, before enabling public announcements. A downgrade must use a matching pre-upgrade backup: older versions do not understand the managed-message queue. Restoring a backup also restores its point-in-time links and playback state; retain newer data before choosing that recovery path.
 
 ## Roadmap
 

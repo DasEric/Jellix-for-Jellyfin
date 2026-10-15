@@ -19,12 +19,14 @@ public sealed class PluginServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton<OperationRateLimiter>();
         serviceCollection.AddSingleton<AchievementService>();
         serviceCollection.AddSingleton<MediaForgeBridgeClient>();
+        serviceCollection.AddSingleton<LibraryCatalog>();
         serviceCollection.AddHttpClient("JellixUpdates", static client => client.Timeout = TimeSpan.FromSeconds(15));
 
         serviceCollection.AddSingleton<DiscordBotService>();
         serviceCollection.AddHostedService(static services => services.GetRequiredService<DiscordBotService>());
         serviceCollection.AddHostedService<PlaybackTrackingService>();
         serviceCollection.AddHostedService<LibraryNotificationService>();
+        serviceCollection.AddHostedService<LibraryOverviewService>();
         serviceCollection.AddHostedService<MediaForgeMonitoringService>();
         serviceCollection.AddHostedService<HealthMonitoringService>();
     }
