@@ -12,6 +12,7 @@ using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Model.Drawing;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.Tasks;
 using Microsoft.Extensions.Hosting;
@@ -189,13 +190,16 @@ public sealed class LibraryNotificationService : BackgroundService
     {
         if (await _database.IsLibraryItemKnownAsync(item.Id, cancellationToken).ConfigureAwait(false)
             && !await _database.IsLibraryItemPendingAsync(item.Id, cancellationToken).ConfigureAwait(false)) return;
-        await _database.TryRegisterLibraryItemAsync(item.Id, DateTime.UtcNow, cancellationToken).ConfigureAwait(false);
+        await _database.TryRegisterLibraryItemAsync(item.Id, _time.GetUtcNow().UtcDateTime, cancellationToken).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(item.Path)) return;
         if (!LibraryMedia.IsLocal(item))
         {
             await _database.MarkLibraryItemAnnouncedAsync(item.Id, cancellationToken).ConfigureAwait(false);
             return;
         }
+        // A scan adds movies before Jellyfin has fetched poster/overview/provider IDs.
+        // Keep the item pending; the metadata refresh (ItemUpdated) or the reconcile pass retries it.
+        if (item is Movie && await ShouldWaitForMetadataAsync(item, cancellationToken).ConfigureAwait(false)) return;
         // Parent IDs can be filled by a later ItemUpdated event.
         if (item is Episode { SeriesId: var seriesId } && seriesId == Guid.Empty) return;
         var identity = await IdentityAsync(item, keys, cancellationToken).ConfigureAwait(false);
@@ -275,16 +279,21 @@ public sealed class LibraryNotificationService : BackgroundService
             }
 
             var series = _libraryManager.GetItemById(batch.SeriesId);
+            // Wait (bounded) for the series poster and overview instead of posting a bare embed.
+            if (series is not null && !LibraryMedia.HasAnnouncementMetadata(series)
+                && _time.GetUtcNow().UtcDateTime - batch.CreatedUtc < MetadataWait(config)) continue;
             var episodes = available.Select(value => value.Episode!).ToArray();
             var structure = LibraryMedia.CountEpisodes(episodes);
             var counts = ((long)available.Length, structure.Seasons, structure.Specials);
             var name = series?.Name ?? episodes[0].SeriesName ?? episodes[0].Name;
             var imagePath = series is null ? null : await PreparePosterAsync(series).ConfigureAwait(false);
+            var description = LibraryMedia.DescribeSeries(name, counts, config.Language == "en");
+            if (LibraryMedia.ShortOverview(series?.Overview) is { } teaser) description += "\n\n" + teaser;
             var payload = JsonSerializer.Serialize(new
             {
                 managedKey = "series:" + batch.Id,
                 title = config.Language == "en" ? "📺 New on Jellyfin" : "📺 Neu auf Jellyfin",
-                description = LibraryMedia.DescribeSeries(name, counts, config.Language == "en"),
+                description,
                 color = 0x00A4DCu, attachmentPath = imagePath,
             });
             await _database.QueueSeriesBatchAsync(batch, payload, cancellationToken).ConfigureAwait(false);
@@ -298,9 +307,21 @@ public sealed class LibraryNotificationService : BackgroundService
         if (item.ProductionYear.HasValue) lines.Add("📅 " + item.ProductionYear.Value.ToString(CultureInfo.InvariantCulture));
         if (item.CommunityRating.HasValue) lines.Add("⭐ " + item.CommunityRating.Value.ToString("0.0", CultureInfo.InvariantCulture) + "/10");
         if (item.RunTimeTicks is > 0) lines.Add("⏱️ " + TimeSpan.FromTicks(item.RunTimeTicks.Value).TotalMinutes.ToString("0", CultureInfo.InvariantCulture) + " min");
-        if (!string.IsNullOrWhiteSpace(item.Overview)) lines.Add(LibraryMedia.Escape(item.Overview.Length > 500 ? item.Overview[..500] + "…" : item.Overview));
+        if (item.Genres is { Length: > 0 } genres) lines.Add("🎭 " + LibraryMedia.Escape(string.Join(", ", genres.Take(3))));
+        if (LibraryMedia.ShortOverview(item.Overview) is { } teaser) lines.Add("\n" + teaser);
         var payload = JsonSerializer.Serialize(new { title = config.Language == "en" ? "🆕 New on Jellyfin" : "🆕 Neu auf Jellyfin", description = string.Join('\n', lines), color = 0x00A4DCu, attachmentPath = await PreparePosterAsync(item).ConfigureAwait(false) });
         await _database.EnqueueNotificationAsync(NotificationPriority.Low, "library", "channel:" + config.NewMediaChannelId, payload, "library-movie:" + identity, DateTime.UtcNow, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static TimeSpan MetadataWait(PluginConfiguration config) => TimeSpan.FromMinutes(Math.Clamp(config.MetadataWaitMinutes, 0, 120));
+
+    private async Task<bool> ShouldWaitForMetadataAsync(BaseItem item, CancellationToken cancellationToken)
+    {
+        var config = _configuration();
+        if (config is not { BotEnabled: true, NewMediaNotificationsEnabled: true } || !_catalog.IsSelected(item)
+            || LibraryMedia.HasAnnouncementMetadata(item)) return false;
+        var firstSeen = await _database.GetLibraryItemFirstSeenAsync(item.Id, cancellationToken).ConfigureAwait(false);
+        return firstSeen is null || _time.GetUtcNow().UtcDateTime - firstSeen.Value < MetadataWait(config);
     }
 
     private async Task<string?> PreparePosterAsync(BaseItem item)
@@ -308,10 +329,11 @@ public sealed class LibraryNotificationService : BackgroundService
         try
         {
             if (!item.HasImage(ImageType.Primary)) return null;
+            // JPEG renders inside embeds on every Discord client (WebP does not on all of them).
             var image = await _imageProcessor.ProcessImage(new ImageProcessingOptions
             {
                 Item = item, ItemId = item.Id, Image = item.GetImageInfo(ImageType.Primary, 0), ImageIndex = 0,
-                MaxWidth = 600, MaxHeight = 900, Quality = 85, SupportedOutputFormats = _imageProcessor.GetSupportedImageOutputFormats(),
+                MaxWidth = 600, MaxHeight = 900, Quality = 85, SupportedOutputFormats = [ImageFormat.Jpg],
             }).ConfigureAwait(false);
             return File.Exists(image.Item1) ? image.Item1 : null;
         }

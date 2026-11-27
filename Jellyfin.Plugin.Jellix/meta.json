@@ -1,14 +1,14 @@
 {
   "category": "General",
-  "changelog": "Migrates requests to the H0melab Jellyfin connector and its approval/direct-download settings. Replaces internal library footer IDs with readable labels, repairs existing messages in place and preserves uncertain-send recovery, library/storage totals and grouped series announcements.",
+  "changelog": "Jellyfin 12.4: announcements wait for poster and overview, posters stay inside the embed (existing messages are repaired), short descriptions for movies and series, request DMs only to the requester, clearer request errors and working account unlock.",
   "description": "Discord account tools, playback statistics, notifications and optional H0melab Downloader requests for Jellyfin.",
   "guid": "bea64f51-00f3-4535-8fd3-88bcd2785f24",
   "name": "Jellix",
   "overview": "Discord companion for Jellyfin",
   "owner": "Eric (DasEric)",
-  "targetAbi": "12.0.0.0",
-  "timestamp": "2026-10-15T16:34:53Z",
-  "version": "0.5.0.0",
+  "targetAbi": "12.4.0.0",
+  "timestamp": "2026-11-27T09:31:41Z",
+  "version": "0.6.0.0",
   "status": "Active",
   "autoUpdate": true
 }

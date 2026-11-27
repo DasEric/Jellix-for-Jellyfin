@@ -4,6 +4,7 @@ using System.Text;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Entities.TV;
+using MediaBrowser.Model.Entities;
 using Jellyfin.Plugin.Jellix.Models;
 
 namespace Jellyfin.Plugin.Jellix.Services;
@@ -101,6 +102,25 @@ internal static class LibraryMedia
         => value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("*", "\\*", StringComparison.Ordinal)
             .Replace("_", "\\_", StringComparison.Ordinal).Replace("`", "\\`", StringComparison.Ordinal)
             .Replace("~", "\\~", StringComparison.Ordinal).Replace("|", "\\|", StringComparison.Ordinal);
+
+    /// <summary>Jellyfin has a poster and an overview, so an announcement will not be bare.</summary>
+    internal static bool HasAnnouncementMetadata(BaseItem item)
+        => item.HasImage(ImageType.Primary) && !string.IsNullOrWhiteSpace(item.Overview);
+
+    /// <summary>A short teaser: the first sentences of the overview within <paramref name="maximum"/> characters.</summary>
+    internal static string? ShortOverview(string? overview, int maximum = 300)
+    {
+        if (string.IsNullOrWhiteSpace(overview)) return null;
+        var text = string.Join(' ', overview.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        if (text.Length <= maximum) return Escape(text);
+        var cut = text[..maximum];
+        // Prefer ending after a complete sentence; fall back to a word boundary.
+        var minimum = Math.Min(80, maximum / 2);
+        var sentence = cut.LastIndexOfAny(['.', '!', '?']);
+        if (sentence >= minimum) return Escape(cut[..(sentence + 1)]);
+        var space = cut.LastIndexOf(' ');
+        return Escape((space >= minimum ? cut[..space] : cut).TrimEnd(',', ';', ':', '-', ' ')) + " …";
+    }
 
     internal static string DescribeSeries(string name, IEnumerable<Episode> episodes, bool english)
         => DescribeSeries(name, CountEpisodes(episodes), english);

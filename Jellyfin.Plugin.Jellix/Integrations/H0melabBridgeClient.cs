@@ -66,8 +66,9 @@ public sealed class H0melabBridgeClient
         catch (TargetInvocationException exception) when (exception.InnerException is not null)
         {
             // The connector owns error sanitization. Do not retain its internal
-            // exception because it could contain an upstream response or secret.
-            throw Rejected();
+            // exception because it could contain an upstream response or secret;
+            // only whitelisted user-facing reasons are translated.
+            throw Rejected(exception.InnerException);
         }
 
         try
@@ -109,16 +110,47 @@ public sealed class H0melabBridgeClient
         {
             throw;
         }
-        catch (Exception)
+        catch (Exception exception)
         {
-            throw Rejected();
+            throw Rejected(exception);
         }
     }
 
-    private static H0melabBridgeException Rejected()
-        => new(Plugin.Instance?.Configuration.Language == "en"
-            ? "The H0melab connector rejected the operation. Check the connector settings and request status."
-            : "Der H0melab-Connector hat die Aktion abgelehnt. Bitte Connector-Einstellungen und Anfragestatus prüfen.");
+    private static H0melabBridgeException Rejected(Exception? reason = null)
+    {
+        var english = Plugin.Instance?.Configuration.Language == "en";
+        return new(DescribeRejection(reason, english) ?? (english
+            ? "The request system rejected the operation. Please try again later or contact the admin."
+            : "Das Anfragesystem hat die Aktion abgelehnt. Bitte später erneut versuchen oder den Admin kontaktieren."));
+    }
+
+    /// <summary>Maps the AniWorld Requests connector's known, user-facing rejections (2.x) to Jellix texts.</summary>
+    internal static string? DescribeRejection(Exception? reason, bool english)
+    {
+        if (reason is null || reason.GetType().Name != "AniWorldApplicationException") return null;
+        var status = reason.GetType().GetProperty("StatusCode")?.GetValue(reason) as System.Net.HttpStatusCode?;
+        if (status == System.Net.HttpStatusCode.TooManyRequests)
+            return english ? "Too many requests. Please wait a moment." : "Zu viele Anfragen. Bitte kurz warten.";
+        if (status == System.Net.HttpStatusCode.ServiceUnavailable)
+        {
+            // Maintenance mode: the admin-written notice is meant for users.
+            var notice = new string(reason.Message.Where(character => !char.IsControl(character)).Take(300).ToArray()).Trim();
+            return notice.Length > 0 ? notice : english ? "Requests are paused for maintenance." : "Anfragen sind wegen Wartung pausiert.";
+        }
+
+        return reason.Message switch
+        {
+            "This content already has an open request." => english ? "You already have an open request for this title." : "Du hast für diesen Titel bereits eine offene Anfrage.",
+            "The user request limit has been reached." => english ? "You have reached the maximum number of open requests." : "Du hast die maximale Anzahl offener Anfragen erreicht.",
+            "The request store is currently full." => english ? "The request system is full right now. Please try again later." : "Das Anfragesystem ist gerade voll. Bitte später erneut versuchen.",
+            "The selected content is already available." => english ? "This title is already available on Jellyfin." : "Dieser Titel ist bereits in Jellyfin verfügbar.",
+            "The Jellyfin user does not exist or is disabled." => english ? "Your Jellyfin account is unavailable or disabled." : "Dein Jellyfin-Konto ist nicht verfügbar oder deaktiviert.",
+            "Die Auswahl ist abgelaufen, wurde bereits verwendet oder gehört zu einem anderen Benutzer." => english ? "This selection expired or was already used. Please search again." : "Diese Auswahl ist abgelaufen oder wurde schon verwendet. Bitte erneut suchen.",
+            "Diese Kategorie ist in den Admin-Einstellungen deaktiviert." => english ? "Requests for this category are disabled." : "Anfragen für diese Kategorie sind deaktiviert.",
+            "Die ausgewählte AniWorld-Quelle ist für diesen Medientyp nicht freigegeben oder deaktiviert." => english ? "No source is enabled for this media type." : "Für diesen Medientyp ist keine Quelle freigegeben.",
+            _ => null,
+        };
+    }
 
     private static Type? FindBridgeType()
         => AppDomain.CurrentDomain.GetAssemblies()

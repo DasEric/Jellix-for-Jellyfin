@@ -82,6 +82,9 @@ public sealed class PluginConfiguration : BasePluginConfiguration
 
     public int SeriesMergeHours { get; set; } = 24;
 
+    /// <summary>Maximum minutes a new announcement waits for Jellyfin metadata (poster and overview). 0 posts immediately.</summary>
+    public int MetadataWaitMinutes { get; set; } = 20;
+
     public bool LibraryOverviewEnabled { get; set; }
 
     public string LibraryOverviewChannelId { get; set; } = string.Empty;

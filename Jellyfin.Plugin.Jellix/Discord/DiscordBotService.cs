@@ -771,7 +771,17 @@ public sealed partial class DiscordBotService : BackgroundService
             return;
         }
 
+        // Jellyfin locks an account by disabling it once the failed-login limit is reached.
+        // Re-enable only such a lockout; an account an administrator disabled stays disabled.
+        var disabled = user.HasPermission(PermissionKind.IsDisabled);
+        if (disabled && !IsLoginLockout(user))
+        {
+            await command.RespondAsync(DiscordText.T("Dein Konto wurde von einem Administrator deaktiviert. Bitte wende dich an den Admin.", "Your account was disabled by an administrator. Please contact the admin."), ephemeral: true).ConfigureAwait(false);
+            return;
+        }
+
         user.InvalidLoginAttemptCount = 0;
+        if (disabled) user.SetPermission(PermissionKind.IsDisabled, false);
         await _userManager.UpdateUserAsync(user).ConfigureAwait(false);
         await TryWriteAuditAsync("discord-user", command.User.Id.ToString(CultureInfo.InvariantCulture), "account-unlocked", "jellyfin-user", user.Id.ToString("N"), string.Empty).ConfigureAwait(false);
         await command.RespondAsync("🔓 " + DiscordText.T("Dein Jellyfin-Konto wurde entsperrt.", "Your Jellyfin account was unlocked."), ephemeral: true).ConfigureAwait(false);
@@ -838,7 +848,9 @@ public sealed partial class DiscordBotService : BackgroundService
             }
             if (config?.H0melabEnabled == true && _h0melab.IsAvailable)
             {
-                embedBuilder.AddField("🎬 H0melab Downloader", DiscordText.T("`/film-anfrage suche`\n`/serien-anfrage suche`\n`/anfragen`", "`/request-movie query`\n`/request-series query`\n`/requests`"), true);
+                embedBuilder.AddField(DiscordText.T("🎬 Filme & Serien anfragen", "🎬 Request movies & series"),
+                    DiscordText.T("`/film-anfrage suche` – Film anfragen\n`/serien-anfrage suche` – Serie anfragen\n`/anfragen` – deine Anfragen & Status\nDu bekommst eine DM, sobald deine Anfrage verfügbar ist – auch bei Anfragen über die Jellyfin-Anfrageseite.",
+                        "`/request-movie query` – request a movie\n`/request-series query` – request a series\n`/requests` – your requests & status\nYou get a DM once your request is available – also for requests made on the Jellyfin request page."), false);
             }
         }
 
@@ -1685,8 +1697,9 @@ public sealed partial class DiscordBotService : BackgroundService
                 : null;
             if (!string.IsNullOrWhiteSpace(attachmentPath) && File.Exists(attachmentPath))
             {
-                builder.WithImageUrl("attachment://" + Path.GetFileName(attachmentPath));
-                await channel.SendFileAsync(attachmentPath, embed: builder.Build(), allowedMentions: AllowedMentions.None).ConfigureAwait(false);
+                using var poster = new FileAttachment(attachmentPath, PosterFileName);
+                builder.WithImageUrl("attachment://" + PosterFileName);
+                await channel.SendFileAsync(poster, embed: builder.Build(), allowedMentions: AllowedMentions.None).ConfigureAwait(false);
             }
             else
             {
@@ -1729,6 +1742,15 @@ public sealed partial class DiscordBotService : BackgroundService
         }
 
         return link;
+    }
+
+    /// <summary>Mirrors Jellyfin's lockout rule: a disabled account whose failed logins reached the limit.</summary>
+    internal static bool IsLoginLockout(Jellyfin.Database.Implementations.Entities.User user)
+    {
+        var limit = user.LoginAttemptsBeforeLockout is > 0
+            ? user.LoginAttemptsBeforeLockout.Value
+            : user.HasPermission(PermissionKind.IsAdministrator) ? 5 : 3;
+        return user.InvalidLoginAttemptCount >= limit;
     }
 
     private static bool RequireStreamingRole(IDiscordInteraction interaction)
@@ -1934,7 +1956,7 @@ public sealed partial class DiscordBotService : BackgroundService
     internal static string RequestStatusLabel(string status)
         => status switch
         {
-            "available" or "completed" => DiscordText.T("Download abgeschlossen", "Download completed"),
+            "available" or "completed" => DiscordText.T("Verfügbar", "Available"),
             "downloading" => DiscordText.T("Wird heruntergeladen", "Downloading"),
             "queued" => DiscordText.T("In Warteschlange", "Queued"),
             "rejected" => DiscordText.T("Abgelehnt", "Rejected"),
@@ -1946,10 +1968,10 @@ public sealed partial class DiscordBotService : BackgroundService
 
     private static Embed BuildRequestsEmbed(string[] lines)
         => JellixEmbeds.Create(
-                "📋 " + DiscordText.T("Deine H0melab-Anfragen", "Your H0melab requests"),
+                "📋 " + DiscordText.T("Deine Anfragen", "Your requests"),
                 lines.Length == 0 ? DiscordText.T("Noch keine Anfragen vorhanden.", "No requests found yet.") : JoinWithinLimit(lines, "\n\n", 4096),
                 JellixEmbeds.Secondary,
-                DiscordText.T("Status direkt aus dem H0melab-Connector", "Status directly from the H0melab connector"))
+                DiscordText.T("Discord- und Jellyfin-Anfragen • Status aus dem Anfragesystem", "Discord and Jellyfin requests • status from the request system"))
             .Build();
 
     private static string PeriodLabel(string period)
@@ -1976,7 +1998,7 @@ public sealed partial class DiscordBotService : BackgroundService
         {
             "achievement" => DiscordText.T("Jellix Achievement", "Jellix achievement"),
             "library" => DiscordText.T("Neu in deiner Jellyfin-Bibliothek", "New in your Jellyfin library"),
-            "h0melab-request" => "Jellix • H0melab Downloader",
+            "h0melab-request" => DiscordText.T("Jellix • Deine Anfrage", "Jellix • Your request"),
             "admin-alert" => DiscordText.T("Jellix Systemwarnung", "Jellix system alert"),
             _ => DiscordText.T("Jellix für Jellyfin", "Jellix for Jellyfin"),
         };

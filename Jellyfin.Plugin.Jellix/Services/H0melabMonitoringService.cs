@@ -114,7 +114,10 @@ public sealed class H0melabMonitoringService : BackgroundService
             }
         }
 
-        foreach (var link in await _database.ListLinksAsync(cancellationToken).ConfigureAwait(false))
+        // Only links of the configured Discord server: a stale link from another server
+        // must not route someone else's result to that Discord account.
+        var guildId = Plugin.Instance?.Configuration.GuildId;
+        foreach (var link in (await _database.ListLinksAsync(cancellationToken).ConfigureAwait(false)).Where(link => link.GuildId == guildId))
         {
             var user = _userManager.GetUserById(link.JellyfinUserId);
             if (user is null || user.HasPermission(PermissionKind.IsDisabled))
@@ -132,7 +135,7 @@ public sealed class H0melabMonitoringService : BackgroundService
 
                 foreach (var item in items.EnumerateArray().Take(500))
                 {
-                    await ObserveRequestAsync(link, item, cancellationToken).ConfigureAwait(false);
+                    await ObserveRequestAsync(link, user.Username, item, cancellationToken).ConfigureAwait(false);
                 }
             }
             // A deleted/disabled user or rejected private list must not starve other linked users.
@@ -141,7 +144,7 @@ public sealed class H0melabMonitoringService : BackgroundService
         }
     }
 
-    private async Task ObserveRequestAsync(UserLink link, JsonElement item, CancellationToken cancellationToken)
+    private async Task ObserveRequestAsync(UserLink link, string username, JsonElement item, CancellationToken cancellationToken)
     {
         var requestId = ReadString(item, "id");
         var status = ReadString(item, "status").ToLowerInvariant();
@@ -149,6 +152,14 @@ public sealed class H0melabMonitoringService : BackgroundService
         {
             return;
         }
+
+        // The connector lists only the caller's own requests (web page and Discord alike).
+        // Bind each request ID to the first Jellyfin user it was seen for, so a result can
+        // never be delivered to anyone but the requester even if a listing were broader.
+        var ownerKey = "h0melab-owner:" + requestId;
+        var owner = await _database.GetNotificationStateAsync(ownerKey, cancellationToken).ConfigureAwait(false);
+        if (owner is null) await _database.TrySetNotificationStateAsync(ownerKey, link.JellyfinUserId.ToString("N"), cancellationToken).ConfigureAwait(false);
+        else if (!string.Equals(owner, link.JellyfinUserId.ToString("N"), StringComparison.Ordinal)) return;
 
         var stateKey = $"h0melab:{link.JellyfinUserId:N}:{requestId}";
         var previous = await _database.GetNotificationStateAsync(stateKey, cancellationToken).ConfigureAwait(false);
@@ -160,25 +171,29 @@ public sealed class H0melabMonitoringService : BackgroundService
 
         var title = Escape(Limit(ReadString(item, "title"), 200));
         var isFailure = status is "failed" or "rejected";
+        var english = Plugin.Instance?.Configuration.Language == "en";
         var description = status switch
         {
-            "available" or "completed" => (Plugin.Instance?.Configuration.Language == "en"
-                ? $"The H0melab connector reports **{title}** as completed."
-                : $"Der H0melab-Connector meldet **{title}** als abgeschlossen."),
-            "rejected" => (Plugin.Instance?.Configuration.Language == "en"
-                ? $"**{title}** was rejected."
-                : $"**{title}** wurde abgelehnt."),
-            _ => (Plugin.Instance?.Configuration.Language == "en"
-                ? $"The download for **{title}** failed."
-                : $"Der Download für **{title}** ist fehlgeschlagen."),
+            "available" or "completed" => english
+                ? $"Your request **{title}** is now available on Jellyfin. Enjoy!"
+                : $"Deine Anfrage **{title}** ist jetzt auf Jellyfin verfügbar. Viel Spaß!",
+            "rejected" => english
+                ? $"Your request **{title}** was rejected."
+                : $"Deine Anfrage **{title}** wurde abgelehnt.",
+            _ => english
+                ? $"Your request **{title}** could not be completed."
+                : $"Deine Anfrage **{title}** konnte nicht abgeschlossen werden.",
         };
         var destination = ResolveDestination(link);
         if (destination is not null)
         {
             var payload = JsonSerializer.Serialize(new
             {
-                title = isFailure ? "⚠️ H0melab Downloader" : "🎉 " + (Plugin.Instance?.Configuration.Language == "en" ? "Your download is complete!" : "Dein Download ist abgeschlossen!"),
-                description,
+                title = isFailure
+                    ? "⚠️ " + (english ? "Request update" : "Update zu deiner Anfrage")
+                    : "🎉 " + (english ? "Your request is available!" : "Deine Anfrage ist verfügbar!"),
+                // Naming the requesting Jellyfin account makes a wrong Discord link obvious to the recipient.
+                description = description + "\n\n" + (english ? "Requested by Jellyfin account: " : "Angefragt mit Jellyfin-Konto: ") + "**" + Escape(Limit(username, 64)) + "**",
                 color = isFailure ? 0xE74C3Cu : 0x2ECC71u,
             });
             await _database.EnqueueNotificationAsync(NotificationPriority.Normal, "h0melab-request", destination, payload, $"h0melab:{link.JellyfinUserId:N}:{requestId}:{status}", DateTime.UtcNow, cancellationToken).ConfigureAwait(false);

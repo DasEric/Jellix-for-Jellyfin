@@ -13,6 +13,12 @@ internal sealed class JellixBridge
     }
 }
 
+/// <summary>Same shape as the connector's user-facing rejection (matched by type name).</summary>
+internal sealed class AniWorldApplicationException(System.Net.HttpStatusCode statusCode, string message) : Exception(message)
+{
+    public System.Net.HttpStatusCode StatusCode { get; } = statusCode;
+}
+
 internal sealed class BridgeServiceProvider(JellixBridge bridge) : IServiceProvider
 {
     public object? GetService(Type serviceType) => serviceType == typeof(JellixBridge) ? bridge : null;

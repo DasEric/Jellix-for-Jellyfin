@@ -49,6 +49,8 @@ var tests = new (string Name, Func<Task> Run)[]
     ("library selection excludes other libraries and remote items", TestLibrarySelectionAsync),
     ("managed messages honor channel and feature settings", TestManagedSettingsAsync),
     ("sticky ignores only its own repost", TestStickyTriggerAsync),
+    ("movie announcements wait for poster and overview", TestMovieMetadataWaitAsync),
+    ("short overview, request errors and lockout detection", TestShortOverviewAndRequestTextsAsync),
 };
 var failed = 0;
 foreach (var test in tests)
@@ -519,7 +521,7 @@ static async Task TestSeriesPipelineAsync()
     try
     {
         using var database = new JellixDatabase(path);
-        var config = new PluginConfiguration { BotEnabled = true, NewMediaNotificationsEnabled = true, NewMediaChannelId = "123456789012345678", SeriesQuietSeconds = 120 };
+        var config = new PluginConfiguration { BotEnabled = true, NewMediaNotificationsEnabled = true, NewMediaChannelId = "123456789012345678", SeriesQuietSeconds = 120, MetadataWaitMinutes = 0 };
         var (library, proxy) = LibraryProxy.Create();
         proxy.Folders.Add(new VirtualFolderInfo { ItemId = Guid.NewGuid().ToString("N"), Name = "Series", Locations = [path], CollectionType = CollectionTypeOptions.tvshows });
         using var catalog = new LibraryCatalog(library, () => config);
@@ -631,7 +633,7 @@ static async Task TestPendingParentUpgradeAsync()
             await command.ExecuteNonQueryAsync().ConfigureAwait(false);
         }
         using var database = new JellixDatabase(path);
-        var config = new PluginConfiguration { BotEnabled = true, NewMediaNotificationsEnabled = true, NewMediaChannelId = "123456789012345678" };
+        var config = new PluginConfiguration { BotEnabled = true, NewMediaNotificationsEnabled = true, NewMediaChannelId = "123456789012345678", MetadataWaitMinutes = 0 };
         var (library, proxy) = LibraryProxy.Create();
         proxy.Folders.Add(new VirtualFolderInfo { ItemId = Guid.NewGuid().ToString("N"), Locations = [path] });
         proxy.Items[series.Id] = series; proxy.Items[episode.Id] = episode; proxy.Items[movie.Id] = movie;
@@ -662,7 +664,7 @@ static async Task TestEpisodePositionImportsAsync()
     try
     {
         using var database = new JellixDatabase(path);
-        var config = new PluginConfiguration { BotEnabled = true, NewEpisodeNotificationsEnabled = true, NewMediaChannelId = "123456789012345678" };
+        var config = new PluginConfiguration { BotEnabled = true, NewEpisodeNotificationsEnabled = true, NewMediaChannelId = "123456789012345678", MetadataWaitMinutes = 0 };
         var (library, proxy) = LibraryProxy.Create();
         proxy.Folders.Add(new VirtualFolderInfo { ItemId = Guid.NewGuid().ToString("N"), Locations = [path] });
         var series = new Series { Id = Guid.NewGuid(), Path = Path.Combine(path, "series"), Name = "Ranges" };
@@ -918,6 +920,81 @@ static Task TestStickyTriggerAsync()
     False(DiscordBotService.ShouldIgnoreOwnStickyMessage(true, false, false));
     True(DiscordBotService.ShouldIgnoreOwnStickyMessage(true, true, false));
     True(DiscordBotService.ShouldIgnoreOwnStickyMessage(true, false, true));
+    return Task.CompletedTask;
+}
+
+static async Task TestMovieMetadataWaitAsync()
+{
+    var path = TempDirectory();
+    try
+    {
+        using var database = new JellixDatabase(path);
+        var config = new PluginConfiguration { BotEnabled = true, NewMediaNotificationsEnabled = true, NewMediaChannelId = "123456789012345678", MetadataWaitMinutes = 20 };
+        var (library, proxy) = LibraryProxy.Create();
+        proxy.Folders.Add(new VirtualFolderInfo { ItemId = Guid.NewGuid().ToString("N"), Locations = [path] });
+        using var catalog = new LibraryCatalog(library, () => config);
+        var clock = new TestTimeProvider(DateTimeOffset.UtcNow);
+        using var service = new LibraryNotificationService(library, null!, database, catalog, null!, NullLogger<LibraryNotificationService>.Instance, () => config, clock);
+        await service.InitializeLibraryStateAsync(CancellationToken.None).ConfigureAwait(false);
+        var keys = new Dictionary<Guid, string>();
+
+        // Freshly scanned: no poster/overview yet, so nothing is posted and the item stays pending.
+        var bare = new Movie { Id = Guid.NewGuid(), Name = "Grave Encounters", ProductionYear = 2011, Path = Path.Combine(path, "grave.mkv") };
+        proxy.Items[bare.Id] = bare;
+        await service.ObserveAsync(bare, keys, CancellationToken.None).ConfigureAwait(false);
+        Equal(0L, await database.GetPendingNotificationCountAsync(CancellationToken.None).ConfigureAwait(false));
+        True(await database.IsLibraryItemPendingAsync(bare.Id, CancellationToken.None).ConfigureAwait(false));
+
+        // The metadata refresh (ItemUpdated) delivers the overview: announced with a short teaser.
+        bare.Overview = "Ein Filmteam dreht in einer verlassenen Psychiatrie. Doch das Gebäude lässt sie nicht mehr gehen. " + new string('x', 400);
+        bare.Genres = ["Horror", "Thriller"];
+        bare.ImageInfos = [new ItemImageInfo { Type = ImageType.Primary, Path = Path.Combine(path, "poster.jpg") }];
+        clock.Now = clock.Now.AddMinutes(2);
+        await service.ObserveAsync(bare, keys, CancellationToken.None).ConfigureAwait(false);
+        var job = (await database.GetNextNotificationAsync(CancellationToken.None).ConfigureAwait(false))!;
+        using (var payload = JsonDocument.Parse(job.PayloadJson))
+        {
+            var description = payload.RootElement.GetProperty("description").GetString()!;
+            True(description.Contains("verlassenen Psychiatrie.", StringComparison.Ordinal));
+            True(description.Contains("🎭 Horror, Thriller", StringComparison.Ordinal));
+            False(description.Contains("xxx", StringComparison.Ordinal));
+        }
+        await database.CompleteNotificationAsync(job.Id, CancellationToken.None).ConfigureAwait(false);
+
+        // Metadata never arrives: posted anyway once the wait expires.
+        var unknown = new Movie { Id = Guid.NewGuid(), Name = "Unknown", Path = Path.Combine(path, "unknown.mkv") };
+        proxy.Items[unknown.Id] = unknown;
+        await service.ObserveAsync(unknown, keys, CancellationToken.None).ConfigureAwait(false);
+        Equal(0L, await database.GetPendingNotificationCountAsync(CancellationToken.None).ConfigureAwait(false));
+        clock.Now = clock.Now.AddMinutes(21);
+        await service.ObserveAsync(unknown, keys, CancellationToken.None).ConfigureAwait(false);
+        Equal(1L, await database.GetPendingNotificationCountAsync(CancellationToken.None).ConfigureAwait(false));
+    }
+    finally { SqliteConnection.ClearAllPools(); Directory.Delete(path, true); }
+}
+
+static Task TestShortOverviewAndRequestTextsAsync()
+{
+    Equal<string?>(null, LibraryMedia.ShortOverview("   "));
+    Equal<string?>("Kurz und \\*gut\\*.", LibraryMedia.ShortOverview("Kurz und\n *gut*."));
+    var cut = LibraryMedia.ShortOverview(new string('a', 200) + ". " + new string('b', 300))!;
+    True(cut.EndsWith('.') && !cut.Contains('b', StringComparison.Ordinal));
+    var words = LibraryMedia.ShortOverview(string.Join(' ', Enumerable.Repeat("wort", 100)))!;
+    True(words.EndsWith(" …", StringComparison.Ordinal) && words.Length <= 303);
+
+    Equal<string?>("Du hast für diesen Titel bereits eine offene Anfrage.",
+        H0melabBridgeClient.DescribeRejection(new Jellyfin.Plugin.AniWorld.Integration.AniWorldApplicationException(System.Net.HttpStatusCode.BadRequest, "This content already has an open request."), false));
+    Equal<string?>("Wartung bis 18 Uhr.",
+        H0melabBridgeClient.DescribeRejection(new Jellyfin.Plugin.AniWorld.Integration.AniWorldApplicationException(System.Net.HttpStatusCode.ServiceUnavailable, "Wartung bis 18 Uhr."), false));
+    Equal<string?>(null, H0melabBridgeClient.DescribeRejection(new Jellyfin.Plugin.AniWorld.Integration.AniWorldApplicationException(System.Net.HttpStatusCode.BadGateway, "upstream secret http://x"), false));
+    Equal<string?>(null, H0melabBridgeClient.DescribeRejection(new InvalidOperationException("This content already has an open request."), false));
+
+    var user = new Jellyfin.Database.Implementations.Entities.User("locked", "provider", "reset") { InvalidLoginAttemptCount = 3 };
+    True(DiscordBotService.IsLoginLockout(user));
+    user.InvalidLoginAttemptCount = 0;
+    False(DiscordBotService.IsLoginLockout(user));
+    user.LoginAttemptsBeforeLockout = 10; user.InvalidLoginAttemptCount = 5;
+    False(DiscordBotService.IsLoginLockout(user));
     return Task.CompletedTask;
 }
 

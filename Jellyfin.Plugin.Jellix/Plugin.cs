@@ -243,6 +243,7 @@ public sealed class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
         value.H0melabPollSeconds = Math.Clamp(value.H0melabPollSeconds, 15, 3600);
         value.SeriesQuietSeconds = Math.Clamp(value.SeriesQuietSeconds, 10, 1800);
         value.SeriesMergeHours = Math.Clamp(value.SeriesMergeHours, 1, 168);
+        value.MetadataWaitMinutes = Math.Clamp(value.MetadataWaitMinutes, 0, 120);
         value.LibraryOverviewMinutes = Math.Clamp(value.LibraryOverviewMinutes, 1, 1440);
         value.AccessRequestCooldownHours = Math.Clamp(value.AccessRequestCooldownHours, 1, 8760);
         value.StickyDebounceSeconds = Math.Clamp(value.StickyDebounceSeconds, 1, 10);

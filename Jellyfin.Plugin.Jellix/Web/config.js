@@ -3,7 +3,7 @@
   const pluginId = 'bea64f51-00f3-4535-8fd3-88bcd2785f24';
   const page = document.querySelector('#JellixConfigPage');
   const booleans = ['BotEnabled','SelfLinkEnabled','PasswordChangeEnabled','RevokeSessionsAfterPasswordChange','UnlockAccountEnabled','UserPageEnabled','StatisticsEnabled','LeaderboardEnabled','AchievementsEnabled','AchievementFilmFanEnabled','AchievementCineasteEnabled','AchievementSeriesJunkieEnabled','AchievementNightOwlEnabled','AchievementBingeWatcherEnabled','AchievementNoLifeEnabled','H0melabEnabled','NewMediaNotificationsEnabled','NewEpisodeNotificationsEnabled','LibraryOverviewEnabled','NowPlayingShowUsernames','RandomEnabled','AccessRequestsEnabled','AssignStreamingRoleAfterApproval','StickyEnabled','AdminAlertsEnabled','CheckJellyfinUpdates'];
-  const numbers = ['LinkCodeLifetimeMinutes','PasswordTicketLifetimeMinutes','CompletedPlaybackPercent','H0melabPollSeconds','SeriesQuietSeconds','SeriesMergeHours','LibraryOverviewMinutes','AccessRequestCooldownHours','StickyDebounceSeconds','HealthCheckMinutes','AuditRetentionDays'];
+  const numbers = ['LinkCodeLifetimeMinutes','PasswordTicketLifetimeMinutes','CompletedPlaybackPercent','H0melabPollSeconds','SeriesQuietSeconds','SeriesMergeHours','MetadataWaitMinutes','LibraryOverviewMinutes','AccessRequestCooldownHours','StickyDebounceSeconds','HealthCheckMinutes','AuditRetentionDays'];
   const strings = ['GuildId','JellyfinPublicUrl','Language','StreamingRoleId','RequestRoleId','AdminRoleId','AchievementChannelId','AchievementNotificationMode','TimeZoneId','RequestNotificationMode','NewMediaChannelId','LibraryOverviewChannelId','LibraryIds','MediaStoragePaths','NowPlayingMode','AccessRequestChannelId','AdminAlertMode','AdminAlertChannelId'];
   let users = [];
 
@@ -71,7 +71,7 @@
       ]);
       const config = results[0];
       booleans.forEach(function (key) { page.querySelector('#' + key).checked = !!config[key]; });
-      const defaults = { H0melabPollSeconds: 60, SeriesQuietSeconds: 120, SeriesMergeHours: 24, LibraryOverviewMinutes: 5 };
+      const defaults = { H0melabPollSeconds: 60, SeriesQuietSeconds: 120, SeriesMergeHours: 24, MetadataWaitMinutes: 20, LibraryOverviewMinutes: 5 };
       numbers.forEach(function (key) { page.querySelector('#' + key).value = config[key] === undefined ? (defaults[key] || '') : config[key]; });
       strings.forEach(function (key) { page.querySelector('#' + key).value = config[key] || ''; });
       page.querySelector('#DiscordToken').placeholder = field(results[1], ['configured', 'Configured'], false) ? 'Gespeichert' : 'Noch nicht gesetzt';

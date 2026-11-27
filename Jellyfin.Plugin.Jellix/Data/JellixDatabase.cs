@@ -939,6 +939,17 @@ public sealed partial class JellixDatabase : IDisposable
         return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not null;
     }
 
+    public async Task<DateTime?> GetLibraryItemFirstSeenAsync(Guid itemId, CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT FirstSeenUtc FROM LibraryAnnouncementState WHERE ItemId=$item;";
+        command.Parameters.AddWithValue("$item", itemId.ToString("N"));
+        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is string value
+            && DateTime.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var parsed)
+            ? parsed : null;
+    }
+
     public async Task MarkLibraryItemAnnouncedAsync(Guid itemId, CancellationToken cancellationToken)
     {
         await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);

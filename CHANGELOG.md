@@ -1,5 +1,16 @@
 # Änderungen
 
+## 0.6.0
+
+- Gebaut gegen Jellyfin 12.4.0 (`targetAbi` 12.4.0.0). Die von Jellix genutzten Jellyfin-Schnittstellen (Benutzer, Passwort, Sitzungen, Bibliothek, Bilder) sind zwischen 12.0 und 12.4 unverändert; Passwortänderung über Discord-Link und Sitzungswiderruf funktionieren unverändert.
+- Neue Filme und Serien werden erst gemeldet, wenn Jellyfin Poster und Beschreibung geladen hat – höchstens „Auf Poster und Beschreibung warten“ Minuten (Standard 20, 0 = sofort). Bisher wurde direkt beim Scan gemeldet, oft ohne Bild und Beschreibung.
+- Film- und Serienmeldungen enthalten eine kurze Beschreibung (erste Sätze, max. 300 Zeichen); Filme zusätzlich bis zu drei Genres. Poster werden als JPEG gesendet.
+- Poster bleiben im Embed: Beim Bearbeiten einer Serienmeldung wurde das Bild bisher auf die ablaufende CDN-Adresse gesetzt, sodass Discord es außerhalb oder doppelt anzeigte. Bestehende Meldungen werden beim nächsten Bot-Start einmalig repariert.
+- Anfrage-DMs gehen nur an den Anfragenden – auch bei Anfragen über die Jellyfin-Anfrageseite. Nur Verknüpfungen des konfigurierten Discord-Servers werden berücksichtigt, jede Anfrage-ID bleibt an ihren ersten Besitzer gebunden, und die DM nennt das anfragende Jellyfin-Konto.
+- Anfragen über den Bot an AniWorld Requests 2.2.4 geprüft (Suche, Auswahl, Absenden, Liste). Bekannte Ablehnungen (offene Anfrage, Limit, bereits verfügbar, Wartung, Rate-Limit, abgelaufene Auswahl …) werden verständlich angezeigt statt einer allgemeinen Fehlermeldung.
+- Command-Guide: Abschnitt „Filme & Serien anfragen“ statt Downloader-Bezeichnung; Status „Verfügbar“ statt „Download abgeschlossen“.
+- `/konto-entsperren` hebt eine Jellyfin-Sperre nach zu vielen Fehlversuchen jetzt tatsächlich auf (Jellyfin deaktiviert das Konto dabei). Von Admins deaktivierte Konten bleiben deaktiviert.
+
 ## 0.5.0
 
 - H0melab Downloader über die bestehende Protokoll-v1-Schnittstelle des Jellyfin-Connectors „AniWorld Requests“, statt MediaForge. Der Connector verwaltet Freigaben, Direktdownloads, Benutzerzuordnung, Quellen, Limits, Wartungsmodus und Downloadvorgaben; Jellix hält keine zweite Anfragewarteschlange und benötigt keinen Downloader-API-Key.

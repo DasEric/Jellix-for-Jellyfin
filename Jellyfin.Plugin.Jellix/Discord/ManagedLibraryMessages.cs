@@ -36,9 +36,15 @@ public sealed partial class DiscordBotService
             ? footer is "Jellix • Bibliotheksübersicht" or "Jellix • Library overview"
             : footer is "Jellix • Neu auf Jellyfin" or "Jellix • New on Jellyfin");
 
-    internal static Embed RepairLibraryFooter(IEmbed embed, string key)
-        => embed.Footer?.Text == "Jellix · " + key
-            ? embed.ToEmbedBuilder().WithFooter(LibraryFooter(key)).Build() : embed.ToEmbedBuilder().Build();
+    internal const string PosterFileName = "poster.jpg";
+
+    internal static Embed RepairLibraryFooter(IEmbed embed, string key, string? attachmentName = null)
+    {
+        var builder = embed.Footer?.Text == "Jellix · " + key ? embed.ToEmbedBuilder().WithFooter(LibraryFooter(key)) : embed.ToEmbedBuilder();
+        // ToEmbedBuilder copies the resolved CDN URL; re-anchor the image to the message's own upload.
+        if (!string.IsNullOrEmpty(attachmentName) && embed.Image is not null) builder.WithImageUrl("attachment://" + attachmentName);
+        return builder.Build();
+    }
 
     internal static bool ShouldDeliverManagedLibrary(string kind, string destination, PluginConfiguration? config)
         => config?.BotEnabled == true && (kind switch
@@ -118,16 +124,23 @@ public sealed partial class DiscordBotService
         private static EmbedBuilder Build(string key, JsonElement root)
             => JellixEmbeds.Create(root.GetProperty("title").GetString()!, root.GetProperty("description").GetString(), JellixEmbeds.Primary, LibraryFooter(key));
 
+        private string? PosterPath(JsonElement root)
+        {
+            var path = root.TryGetProperty("attachmentPath", out var attachment) && attachment.ValueKind == JsonValueKind.String ? attachment.GetString() : null;
+            return attachFiles && !string.IsNullOrWhiteSpace(path) && File.Exists(path) ? path : null;
+        }
+
         public async Task<string> CreateAsync(string key, string payload, CancellationToken cancellationToken)
         {
             using var document = JsonDocument.Parse(payload);
             var builder = Build(key, document.RootElement);
-            var path = document.RootElement.TryGetProperty("attachmentPath", out var attachment) ? attachment.GetString() : null;
             IUserMessage message;
-            if (attachFiles && !string.IsNullOrWhiteSpace(path) && File.Exists(path))
+            if (PosterPath(document.RootElement) is { } path)
             {
-                builder.WithImageUrl("attachment://" + Path.GetFileName(path));
-                message = await channel.SendFileAsync(path, embed: builder.Build(), allowedMentions: AllowedMentions.None, options: Options(cancellationToken)).ConfigureAwait(false);
+                // The embed references the upload by name, so Discord shows the poster inside the embed only.
+                using var poster = new FileAttachment(path, PosterFileName);
+                builder.WithImageUrl("attachment://" + PosterFileName);
+                message = await channel.SendFileAsync(poster, embed: builder.Build(), allowedMentions: AllowedMentions.None, options: Options(cancellationToken)).ConfigureAwait(false);
             }
             else message = await channel.SendMessageAsync(embed: builder.Build(), allowedMentions: AllowedMentions.None, options: Options(cancellationToken)).ConfigureAwait(false);
             return message.Id.ToString(CultureInfo.InvariantCulture);
@@ -140,8 +153,23 @@ public sealed partial class DiscordBotService
             if (!MatchesKnown(message, key, botId)) throw new InvalidOperationException("Managed message identity changed.");
             using var document = JsonDocument.Parse(payload);
             var builder = Build(key, document.RootElement);
-            var image = message.Attachments.FirstOrDefault()?.Url;
-            if (image is not null) builder.WithImageUrl(image);
+            if (PosterPath(document.RootElement) is { } path)
+            {
+                // Replace the upload: a stale attachment would otherwise render as a second, loose image.
+                using var poster = new FileAttachment(path, PosterFileName);
+                builder.WithImageUrl("attachment://" + PosterFileName);
+                await message.ModifyAsync(properties =>
+                {
+                    properties.Embeds = new[] { builder.Build() };
+                    properties.Attachments = new[] { poster };
+                    properties.AllowedMentions = AllowedMentions.None;
+                }, Options(cancellationToken)).ConfigureAwait(false);
+                return;
+            }
+
+            // Never point the embed at the attachment's signed CDN URL; it expires and Discord then
+            // shows the upload outside the embed. attachment://name keeps it inside.
+            if (message.Attachments.FirstOrDefault()?.Filename is { Length: > 0 } existing) builder.WithImageUrl("attachment://" + existing);
             await message.ModifyAsync(properties => { properties.Embeds = new[] { builder.Build() }; properties.AllowedMentions = AllowedMentions.None; }, Options(cancellationToken)).ConfigureAwait(false);
         }
     }
@@ -162,18 +190,35 @@ public sealed partial class DiscordBotService
             if (state.MessageId is null || !ulong.TryParse(state.ChannelId, out var channelId)
                 || !ulong.TryParse(state.MessageId, out var messageId)) continue;
             var marker = "human-footer-v1:" + state.MessageId;
-            if (await _database.GetBotStateAsync(marker, CancellationToken.None).ConfigureAwait(false) == "1") continue;
+            // 0.6: earlier edits pointed the embed at an expiring CDN URL, so Discord showed the
+            // poster outside (or twice). Re-anchor every managed message to its own upload once.
+            var posterMarker = "poster-anchor-v1:" + state.MessageId;
+            var footerDone = await _database.GetBotStateAsync(marker, CancellationToken.None).ConfigureAwait(false) == "1";
+            var posterDone = await _database.GetBotStateAsync(posterMarker, CancellationToken.None).ConfigureAwait(false) == "1";
+            if (footerDone && posterDone) continue;
             try
             {
                 if (await _client.Rest.GetChannelAsync(channelId).ConfigureAwait(false) is not ITextChannel channel
                     || channel.GuildId.ToString(CultureInfo.InvariantCulture) != Plugin.Instance?.Configuration.GuildId) continue;
                 if (await channel.GetMessageAsync(messageId).ConfigureAwait(false) is IUserMessage message && message.Author.Id == _client.CurrentUser.Id)
                 {
-                    var embeds = message.Embeds.Select(embed => RepairLibraryFooter(embed, state.Key)).ToArray();
-                    if (message.Embeds.Any(embed => embed.Footer?.Text == "Jellix · " + state.Key))
+                    var attachmentName = message.Attachments.FirstOrDefault()?.Filename;
+                    var legacyFooter = message.Embeds.Any(embed => embed.Footer?.Text == "Jellix · " + state.Key);
+                    var reanchor = !posterDone && attachmentName is not null && message.Embeds.Count > 0;
+                    if (legacyFooter || reanchor)
+                    {
+                        var embeds = message.Embeds.Select((embed, index) =>
+                        {
+                            var repaired = RepairLibraryFooter(embed, state.Key, attachmentName);
+                            return reanchor && index == 0 && embed.Image is null
+                                ? repaired.ToEmbedBuilder().WithImageUrl("attachment://" + attachmentName).Build()
+                                : repaired;
+                        }).ToArray();
                         await message.ModifyAsync(properties => { properties.Embeds = embeds; properties.AllowedMentions = AllowedMentions.None; }).ConfigureAwait(false);
+                    }
                 }
                 await _database.SetBotStateAsync(marker, "1", CancellationToken.None).ConfigureAwait(false);
+                await _database.SetBotStateAsync(posterMarker, "1", CancellationToken.None).ConfigureAwait(false);
             }
             catch (Exception exception) { LogDiscordWarning(_logger, "library footer migration will retry on reconnect", exception); }
         }
